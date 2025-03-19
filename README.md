@@ -93,9 +93,4 @@ curl -X POST http://localhost:8080/api/audit-logs -H "Content-Type: application/
      -d '{"entity_type": "user", "entity_id": 1, "action": "update", "details": "Manuel güncelleme işlemi"}'
 ```
 
-## Veritabanını Sıfırlama
-
-SQLite kullandığımız için veritabanını sıfırlamak oldukça kolaydır:
-
-```bash
 # Uygulamayı durdurma (Ctrl+C)
