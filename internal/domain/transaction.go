@@ -12,9 +12,10 @@ const (
 	TransactionTypeWithdraw TransactionType = "withdraw"
 	TransactionTypeTransfer TransactionType = "transfer"
 
-	TransactionStatusPending   TransactionStatus = "pending"
-	TransactionStatusCompleted TransactionStatus = "completed"
-	TransactionStatusFailed    TransactionStatus = "failed"
+	TransactionStatusPending    TransactionStatus = "pending"
+	TransactionStatusCompleted  TransactionStatus = "completed"
+	TransactionStatusFailed     TransactionStatus = "failed"
+	TransactionStatusRolledBack TransactionStatus = "rolled_back"
 )
 
 type TransactionStats struct {
@@ -54,4 +55,6 @@ type TransactionService interface {
 	GetWorkerPoolStats() (TransactionStats, error)
 	ProcessBatchTransactions(transactions []*Transaction) (processed int, failed int, err error)
 	Shutdown()
+	RollbackTransaction(transactionID int64) error
+	IsTransactionEligibleForRollback(transactionID int64) (bool, error)
 }

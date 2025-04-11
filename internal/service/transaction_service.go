@@ -446,11 +446,130 @@ func (s *TransactionService) ProcessBatchTransactions(transactions []*domain.Tra
 }
 
 func (s *TransactionService) Shutdown() {
-	s.initMutex.Lock()
-	defer s.initMutex.Unlock()
-
 	if s.initialized {
 		s.workerPool.Stop()
-		s.initialized = false
+		s.logger.Info("İşlem worker pool'u durduruldu", map[string]interface{}{})
 	}
+}
+
+func (s *TransactionService) RollbackTransaction(transactionID int64) error {
+	tx, err := s.GetTransactionByID(transactionID)
+	if err != nil {
+		return fmt.Errorf("işlem geri alınamadı: %w", err)
+	}
+
+	eligible, err := s.IsTransactionEligibleForRollback(transactionID)
+	if err != nil {
+		return err
+	}
+
+	if !eligible {
+		return fmt.Errorf("işlem geri alınamaz: %d", transactionID)
+	}
+
+	var rollbackErr error
+
+	switch tx.Type {
+	case domain.TransactionTypeDeposit:
+		if tx.ToUserID == nil {
+			return fmt.Errorf("geçersiz işlem: alıcı ID'si bulunamadı")
+		}
+		balance, err := s.balanceRepo.FindByUserID(*tx.ToUserID)
+		if err != nil {
+			return fmt.Errorf("bakiye kontrol edilemedi: %w", err)
+		}
+
+		if balance.Amount < tx.Amount {
+			return fmt.Errorf("geri alma için yetersiz bakiye: %.2f", balance.Amount)
+		}
+
+		_, rollbackErr = s.balanceSvc.WithdrawAtomically(*tx.ToUserID, tx.Amount)
+
+	case domain.TransactionTypeWithdraw:
+		if tx.FromUserID == nil {
+			return fmt.Errorf("geçersiz işlem: gönderen ID'si bulunamadı")
+		}
+
+		_, rollbackErr = s.balanceSvc.DepositAtomically(*tx.FromUserID, tx.Amount)
+
+	case domain.TransactionTypeTransfer:
+		if tx.FromUserID == nil || tx.ToUserID == nil {
+			return fmt.Errorf("geçersiz işlem: gönderen veya alıcı ID'si bulunamadı")
+		}
+
+		balance, err := s.balanceRepo.FindByUserID(*tx.ToUserID)
+		if err != nil {
+			return fmt.Errorf("bakiye kontrol edilemedi: %w", err)
+		}
+
+		if balance.Amount < tx.Amount {
+			return fmt.Errorf("geri alma için yetersiz bakiye: %.2f", balance.Amount)
+		}
+
+		_, err = s.balanceSvc.WithdrawAtomically(*tx.ToUserID, tx.Amount)
+		if err != nil {
+			return fmt.Errorf("geri alma sırasında para çekme işlemi başarısız: %w", err)
+		}
+
+		_, rollbackErr = s.balanceSvc.DepositAtomically(*tx.FromUserID, tx.Amount)
+	default:
+		return fmt.Errorf("bilinmeyen işlem tipi: %s", tx.Type)
+	}
+
+	if rollbackErr != nil {
+		return fmt.Errorf("işlem geri alma sırasında hata: %w", rollbackErr)
+	}
+
+	if err := s.repo.UpdateStatus(transactionID, domain.TransactionStatusRolledBack); err != nil {
+		s.logger.Error("İşlem durumu güncellenemedi", map[string]interface{}{
+			"transaction_id": transactionID,
+			"error":          err.Error(),
+		})
+		return fmt.Errorf("işlem durumu güncellenemedi: %w", err)
+	}
+
+	auditLog := &domain.AuditLog{
+		EntityType: domain.EntityTypeTransaction,
+		EntityID:   transactionID,
+		Action:     "rollback",
+		Details:    fmt.Sprintf("İşlem geri alındı: %d", transactionID),
+		CreatedAt:  time.Now(),
+	}
+
+	if err := s.auditLogRepo.Create(auditLog); err != nil {
+		s.logger.Error("Denetim kaydı oluşturulamadı", map[string]interface{}{
+			"transaction_id": transactionID,
+			"error":          err.Error(),
+		})
+	}
+
+	s.logger.Info("İşlem başarıyla geri alındı", map[string]interface{}{
+		"transaction_id": transactionID,
+		"type":           tx.Type,
+		"amount":         tx.Amount,
+	})
+
+	return nil
+}
+
+func (s *TransactionService) IsTransactionEligibleForRollback(transactionID int64) (bool, error) {
+	tx, err := s.GetTransactionByID(transactionID)
+	if err != nil {
+		return false, fmt.Errorf("işlem kontrol edilemedi: %w", err)
+	}
+
+	if tx.Status != domain.TransactionStatusCompleted {
+		return false, nil
+	}
+
+	if tx.Status == domain.TransactionStatusRolledBack {
+		return false, nil
+	}
+
+	rollbackDeadline := time.Now().Add(-24 * time.Hour)
+	if tx.CreatedAt.Before(rollbackDeadline) {
+		return false, nil
+	}
+
+	return true, nil
 }

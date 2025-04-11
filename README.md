@@ -29,8 +29,14 @@ Aşağıdaki curl komutlarını kullanarak API'yi test edebilirsiniz:
 
 ```bash
 # Yeni Kullanıcı Oluşturma
-curl -X POST http://localhost:8080/api/users -H "Content-Type: application/json" \
-     -d '{"username": "testuser", "email": "test@example.com", "password_hash": "hashedpassword123", "role": "user"}'
+curl --location 'http://localhost:8080/api/users' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+    "username": "testuser",
+    "email": "test@example.com",
+    "password": "test123",
+    "role": "user"
+}'
 
 # Kullanıcı Bilgilerini Görüntüleme
 curl -X GET "http://localhost:8080/api/users?id=1"
@@ -106,7 +112,8 @@ curl --location 'http://localhost:8080/api/transactions/deposit' \
 }'
 
 # Transaction stats
-curl --location 'http://localhost:8080/api/transactions/stats'
+curl --location 'http://localhost:8080/api/transactions/stats' \
+--header 'x-api-key: 4aa9c8d94d3aeccb09ca9811b41975f596ce3f9995e062cd129becf6434d3ed6'
 
 # Multiple Transactions
 curl --location 'http://localhost:8080/api/transactions/batch' \
@@ -119,4 +126,27 @@ curl --location 'http://localhost:8080/api/transactions/batch' \
     {"sender_id": 3, "receiver_id": 2, "amount": 200, "description": "Test işlem 4"}
   ]
 }'
+```
+
+# Auth
+
+Remove the payflow.db first
+
+```bash
+# Create admin user
+   curl -X POST http://localhost:8080/api/users -H "Content-Type: application/json" -d '{
+     "username": "admin",
+     "email": "admin@example.com",
+     "password": "securepassword",
+     "role": "admin"
+   }'
+
+# Login and get the API key
+   curl -X POST http://localhost:8080/api/login -H "Content-Type: application/json" -d '{
+     "username": "admin",
+     "password": "securepassword"
+   }'
+
+# Check stats (admin)
+curl -X GET http://localhost:8080/api/transactions/stats -H "X-API-Key: <api-key>"
 ```

@@ -126,6 +126,7 @@ func (m *MigrationService) RunMigrations() error {
 		{"create_transactions_table", CreateTransactionsTable},
 		{"create_balances_table", CreateBalancesTable},
 		{"create_audit_logs_table", CreateAuditLogsTable},
+		{"create_balance_history_table", CreateBalanceHistoryTable},
 	}
 
 	for _, migration := range migrations {
@@ -145,6 +146,7 @@ func CreateUsersTable(db *sql.DB) error {
         email TEXT NOT NULL UNIQUE,
         password_hash TEXT NOT NULL,
         role TEXT NOT NULL DEFAULT 'user',
+        api_key TEXT UNIQUE,
         created_at TIMESTAMP NOT NULL,
         updated_at TIMESTAMP NOT NULL
     )
@@ -197,6 +199,27 @@ func CreateAuditLogsTable(db *sql.DB) error {
         details TEXT,
         created_at TIMESTAMP NOT NULL
     )
+    `
+
+	_, err := db.Exec(query)
+	return err
+}
+
+func CreateBalanceHistoryTable(db *sql.DB) error {
+	query := `
+    CREATE TABLE IF NOT EXISTS balance_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        amount DECIMAL(18,2) NOT NULL,
+        previous_amount DECIMAL(18,2) NOT NULL,
+        transaction_id INTEGER,
+        operation TEXT NOT NULL,
+        created_at TIMESTAMP NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users (id),
+        FOREIGN KEY (transaction_id) REFERENCES transactions (id)
+    );
+    CREATE INDEX IF NOT EXISTS balance_history_user_id_idx ON balance_history (user_id);
+    CREATE INDEX IF NOT EXISTS balance_history_created_at_idx ON balance_history (created_at);
     `
 
 	_, err := db.Exec(query)

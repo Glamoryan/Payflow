@@ -22,7 +22,11 @@ func NewUserRepository(db *sql.DB, logger logger.Logger) domain.UserRepository {
 }
 
 func (r *UserRepository) FindByID(id int64) (*domain.User, error) {
-	query := `SELECT id, username, email, password_hash, role, created_at, updated_at FROM users WHERE id = $1`
+	query := `
+		SELECT id, username, email, password_hash, role, api_key, created_at, updated_at
+		FROM users
+		WHERE id = ?
+	`
 
 	var user domain.User
 	err := r.db.QueryRow(query, id).Scan(
@@ -31,6 +35,7 @@ func (r *UserRepository) FindByID(id int64) (*domain.User, error) {
 		&user.Email,
 		&user.PasswordHash,
 		&user.Role,
+		&user.ApiKey,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -47,7 +52,11 @@ func (r *UserRepository) FindByID(id int64) (*domain.User, error) {
 }
 
 func (r *UserRepository) FindByUsername(username string) (*domain.User, error) {
-	query := `SELECT id, username, email, password_hash, role, created_at, updated_at FROM users WHERE username = $1`
+	query := `
+		SELECT id, username, email, password_hash, role, api_key, created_at, updated_at
+		FROM users
+		WHERE username = ?
+	`
 
 	var user domain.User
 	err := r.db.QueryRow(query, username).Scan(
@@ -56,6 +65,7 @@ func (r *UserRepository) FindByUsername(username string) (*domain.User, error) {
 		&user.Email,
 		&user.PasswordHash,
 		&user.Role,
+		&user.ApiKey,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -72,15 +82,21 @@ func (r *UserRepository) FindByUsername(username string) (*domain.User, error) {
 }
 
 func (r *UserRepository) FindByEmail(email string) (*domain.User, error) {
-	query := `SELECT id, username, email, password_hash, role, created_at, updated_at FROM users WHERE email = $1`
-
 	var user domain.User
+
+	query := `
+		SELECT id, username, email, password_hash, role, api_key, created_at, updated_at
+		FROM users
+		WHERE email = ?
+	`
+
 	err := r.db.QueryRow(query, email).Scan(
 		&user.ID,
 		&user.Username,
 		&user.Email,
 		&user.PasswordHash,
 		&user.Role,
+		&user.ApiKey,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -89,7 +105,40 @@ func (r *UserRepository) FindByEmail(email string) (*domain.User, error) {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
-		r.logger.Error("Kullanıcı e-posta adresine göre bulunamadı", map[string]interface{}{"email": email, "error": err.Error()})
+
+		r.logger.Error("Kullanıcı bulunamadı", map[string]interface{}{"email": email, "error": err.Error()})
+		return nil, fmt.Errorf("kullanıcı bulunamadı: %w", err)
+	}
+
+	return &user, nil
+}
+
+func (r *UserRepository) FindByApiKey(apiKey string) (*domain.User, error) {
+	var user domain.User
+
+	query := `
+		SELECT id, username, email, password_hash, role, api_key, created_at, updated_at
+		FROM users
+		WHERE api_key = ?
+	`
+
+	err := r.db.QueryRow(query, apiKey).Scan(
+		&user.ID,
+		&user.Username,
+		&user.Email,
+		&user.PasswordHash,
+		&user.Role,
+		&user.ApiKey,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+
+		r.logger.Error("Kullanıcı bulunamadı", map[string]interface{}{"api_key": apiKey, "error": err.Error()})
 		return nil, fmt.Errorf("kullanıcı bulunamadı: %w", err)
 	}
 
@@ -98,8 +147,8 @@ func (r *UserRepository) FindByEmail(email string) (*domain.User, error) {
 
 func (r *UserRepository) Create(user *domain.User) error {
 	query := `
-		INSERT INTO users (username, email, password_hash, role, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO users (username, email, password_hash, role, api_key, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		RETURNING id
 	`
 
@@ -117,6 +166,7 @@ func (r *UserRepository) Create(user *domain.User) error {
 		user.Email,
 		user.PasswordHash,
 		user.Role,
+		user.ApiKey,
 		user.CreatedAt,
 		user.UpdatedAt,
 	).Scan(&user.ID)
@@ -132,8 +182,8 @@ func (r *UserRepository) Create(user *domain.User) error {
 func (r *UserRepository) Update(user *domain.User) error {
 	query := `
 		UPDATE users
-		SET username = $1, email = $2, password_hash = $3, role = $4, updated_at = $5
-		WHERE id = $6
+		SET username = ?, email = ?, password_hash = ?, role = ?, api_key = ?, updated_at = ?
+		WHERE id = ?
 	`
 
 	user.UpdatedAt = time.Now()
@@ -144,6 +194,7 @@ func (r *UserRepository) Update(user *domain.User) error {
 		user.Email,
 		user.PasswordHash,
 		user.Role,
+		user.ApiKey,
 		user.UpdatedAt,
 		user.ID,
 	)
@@ -157,7 +208,7 @@ func (r *UserRepository) Update(user *domain.User) error {
 }
 
 func (r *UserRepository) Delete(id int64) error {
-	query := `DELETE FROM users WHERE id = $1`
+	query := `DELETE FROM users WHERE id = ?`
 
 	_, err := r.db.Exec(query, id)
 

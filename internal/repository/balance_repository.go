@@ -172,3 +172,143 @@ func (r *BalanceRepository) FindByUserIDNoLock(userID int64) (*domain.Balance, e
 
 	return &balance, nil
 }
+
+func (r *BalanceRepository) AddBalanceHistory(history *domain.BalanceHistory) error {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	query := `
+		INSERT INTO balance_history (user_id, amount, previous_amount, transaction_id, operation, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id
+	`
+
+	err := r.db.QueryRow(
+		query,
+		history.UserID,
+		history.Amount,
+		history.PreviousAmount,
+		history.TransactionID,
+		history.Operation,
+		history.CreatedAt,
+	).Scan(&history.ID)
+
+	if err != nil {
+		r.logger.Error("Bakiye geçmişi eklenemedi", map[string]interface{}{
+			"user_id": history.UserID,
+			"error":   err.Error(),
+		})
+		return fmt.Errorf("bakiye geçmişi eklenemedi: %w", err)
+	}
+
+	return nil
+}
+
+func (r *BalanceRepository) GetBalanceHistory(userID int64, limit, offset int) ([]*domain.BalanceHistory, error) {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	query := `
+		SELECT id, user_id, amount, previous_amount, transaction_id, operation, created_at
+		FROM balance_history
+		WHERE user_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3
+	`
+
+	rows, err := r.db.Query(query, userID, limit, offset)
+	if err != nil {
+		r.logger.Error("Bakiye geçmişi sorgulanırken hata oluştu", map[string]interface{}{
+			"user_id": userID,
+			"error":   err.Error(),
+		})
+		return nil, fmt.Errorf("bakiye geçmişi sorgulanırken hata oluştu: %w", err)
+	}
+	defer rows.Close()
+
+	var history []*domain.BalanceHistory
+	for rows.Next() {
+		var h domain.BalanceHistory
+		if err := rows.Scan(
+			&h.ID,
+			&h.UserID,
+			&h.Amount,
+			&h.PreviousAmount,
+			&h.TransactionID,
+			&h.Operation,
+			&h.CreatedAt,
+		); err != nil {
+			r.logger.Error("Bakiye geçmişi verisi taranırken hata oluştu", map[string]interface{}{
+				"user_id": userID,
+				"error":   err.Error(),
+			})
+			return nil, fmt.Errorf("bakiye geçmişi verisi taranırken hata oluştu: %w", err)
+		}
+		history = append(history, &h)
+	}
+
+	if err := rows.Err(); err != nil {
+		r.logger.Error("Bakiye geçmişi verisi alınırken hata oluştu", map[string]interface{}{
+			"user_id": userID,
+			"error":   err.Error(),
+		})
+		return nil, fmt.Errorf("bakiye geçmişi verisi alınırken hata oluştu: %w", err)
+	}
+
+	return history, nil
+}
+
+func (r *BalanceRepository) GetBalanceHistoryByDateRange(userID int64, startDate, endDate time.Time) ([]*domain.BalanceHistory, error) {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	query := `
+		SELECT id, user_id, amount, previous_amount, transaction_id, operation, created_at
+		FROM balance_history
+		WHERE user_id = $1 AND created_at BETWEEN $2 AND $3
+		ORDER BY created_at DESC
+	`
+
+	rows, err := r.db.Query(query, userID, startDate, endDate)
+	if err != nil {
+		r.logger.Error("Bakiye geçmişi sorgulanırken hata oluştu", map[string]interface{}{
+			"user_id":    userID,
+			"start_date": startDate,
+			"end_date":   endDate,
+			"error":      err.Error(),
+		})
+		return nil, fmt.Errorf("bakiye geçmişi sorgulanırken hata oluştu: %w", err)
+	}
+	defer rows.Close()
+
+	var history []*domain.BalanceHistory
+	for rows.Next() {
+		var h domain.BalanceHistory
+		if err := rows.Scan(
+			&h.ID,
+			&h.UserID,
+			&h.Amount,
+			&h.PreviousAmount,
+			&h.TransactionID,
+			&h.Operation,
+			&h.CreatedAt,
+		); err != nil {
+			r.logger.Error("Bakiye geçmişi verisi taranırken hata oluştu", map[string]interface{}{
+				"user_id": userID,
+				"error":   err.Error(),
+			})
+			return nil, fmt.Errorf("bakiye geçmişi verisi taranırken hata oluştu: %w", err)
+		}
+		history = append(history, &h)
+	}
+
+	if err := rows.Err(); err != nil {
+		r.logger.Error("Bakiye geçmişi verisi alınırken hata oluştu", map[string]interface{}{
+			"user_id": userID,
+			"error":   err.Error(),
+		})
+		return nil, fmt.Errorf("bakiye geçmişi verisi alınırken hata oluştu: %w", err)
+	}
+
+	return history, nil
+}

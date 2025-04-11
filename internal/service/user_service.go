@@ -1,7 +1,9 @@
 package service
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"math/rand"
 	"time"
 
 	"payflow/internal/domain"
@@ -200,4 +202,111 @@ func (s *UserService) DeleteUser(id int64) error {
 	}
 
 	return nil
+}
+
+func (s *UserService) HasAdminRole(userID int64) (bool, error) {
+	user, err := s.GetUserByID(userID)
+	if err != nil {
+		return false, fmt.Errorf("yetki kontrolü yapılamadı: %w", err)
+	}
+
+	return user.Role == domain.UserRoleAdmin, nil
+}
+
+func (s *UserService) CheckPermission(userID int64, requiredRole string) (bool, error) {
+	user, err := s.GetUserByID(userID)
+	if err != nil {
+		return false, fmt.Errorf("yetki kontrolü yapılamadı: %w", err)
+	}
+
+	if user.Role == domain.UserRoleAdmin {
+		return true, nil
+	}
+
+	if requiredRole == domain.UserRoleAdmin && user.Role != domain.UserRoleAdmin {
+		return false, nil
+	}
+	return user.Role == requiredRole, nil
+}
+
+func (s *UserService) GenerateApiKey(userID int64) (string, error) {
+	user, err := s.GetUserByID(userID)
+	if err != nil {
+		return "", fmt.Errorf("API anahtarı oluşturulamadı: %w", err)
+	}
+
+	b := make([]byte, 32)
+	_, err = rand.Read(b)
+	if err != nil {
+		return "", fmt.Errorf("API anahtarı oluşturulamadı: %w", err)
+	}
+
+	apiKey := fmt.Sprintf("%x", b)
+
+	user.ApiKey = apiKey
+	user.UpdatedAt = time.Now()
+
+	if err := s.repo.Update(user); err != nil {
+		return "", fmt.Errorf("API anahtarı kaydedilemedi: %w", err)
+	}
+
+	auditLog := &domain.AuditLog{
+		EntityType: domain.EntityTypeUser,
+		EntityID:   userID,
+		Action:     domain.ActionTypeUpdate,
+		Details:    "API anahtarı yenilendi",
+		CreatedAt:  time.Now(),
+	}
+
+	if err := s.auditLogRepo.Create(auditLog); err != nil {
+		s.logger.Error("Denetim kaydı oluşturulamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
+	}
+
+	return apiKey, nil
+}
+
+func (s *UserService) GetUserByApiKey(apiKey string) (*domain.User, error) {
+	if apiKey == "" {
+		return nil, fmt.Errorf("API anahtarı boş olamaz")
+	}
+
+	user, err := s.repo.FindByApiKey(apiKey)
+	if err != nil {
+		s.logger.Error("API anahtarı ile kullanıcı bulunamadı", map[string]interface{}{"error": err.Error()})
+		return nil, fmt.Errorf("kullanıcı bulunamadı: %w", err)
+	}
+
+	if user == nil {
+		return nil, fmt.Errorf("geçersiz API anahtarı")
+	}
+
+	return user, nil
+}
+
+func (s *UserService) Login(username, password string) (string, error) {
+	user, err := s.repo.FindByUsername(username)
+	if err != nil {
+		return "", fmt.Errorf("giriş yapılamadı: %w", err)
+	}
+
+	if user == nil {
+		return "", fmt.Errorf("geçersiz kullanıcı adı veya şifre")
+	}
+
+	passwordHash := fmt.Sprintf("%x", sha256.Sum256([]byte(password)))
+
+	if user.PasswordHash != passwordHash {
+		s.logger.Error("Şifre eşleşmiyor", map[string]interface{}{"username": username})
+		return "", fmt.Errorf("geçersiz kullanıcı adı veya şifre")
+	}
+
+	if user.ApiKey == "" {
+		apiKey, err := s.GenerateApiKey(user.ID)
+		if err != nil {
+			return "", fmt.Errorf("API anahtarı oluşturulamadı: %w", err)
+		}
+		return apiKey, nil
+	}
+
+	return user.ApiKey, nil
 }

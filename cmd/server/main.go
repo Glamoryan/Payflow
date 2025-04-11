@@ -73,7 +73,7 @@ func main() {
 	}()
 
 	userHandler := api.NewUserHandler(userService, log)
-	transactionHandler := api.NewTransactionHandler(transactionService, log)
+	transactionHandler := api.NewTransactionHandler(transactionService, userService, log)
 	balanceHandler := api.NewBalanceHandler(balanceService, log)
 	auditLogHandler := api.NewAuditLogHandler(auditLogService, log)
 
