@@ -110,3 +110,90 @@ func (s *BalanceService) UpdateBalance(userID int64, amount float64) error {
 
 	return nil
 }
+
+func (s *BalanceService) DepositAtomically(userID int64, amount float64) (*domain.Balance, error) {
+	if amount <= 0 {
+		return nil, fmt.Errorf("geçersiz miktar: %.2f", amount)
+	}
+
+	newAmount, err := s.repo.AtomicUpdate(userID, func(currentAmount float64) float64 {
+		return currentAmount + amount
+	})
+
+	if err != nil {
+		s.logger.Error("Para yatırma işlemi sırasında hata oluştu", map[string]interface{}{
+			"user_id": userID,
+			"amount":  amount,
+			"error":   err.Error(),
+		})
+		return nil, fmt.Errorf("para yatırma işlemi yapılamadı: %w", err)
+	}
+
+	auditLog := &domain.AuditLog{
+		EntityType: domain.EntityTypeBalance,
+		EntityID:   userID,
+		Action:     domain.ActionTypeUpdate,
+		Details:    fmt.Sprintf("Atomik para yatırma: +%.2f", amount),
+		CreatedAt:  time.Now(),
+	}
+
+	if err := s.auditLogRepo.Create(auditLog); err != nil {
+		s.logger.Error("Denetim kaydı oluşturulamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
+	}
+
+	return &domain.Balance{
+		UserID:        userID,
+		Amount:        newAmount,
+		LastUpdatedAt: time.Now(),
+	}, nil
+}
+
+func (s *BalanceService) WithdrawAtomically(userID int64, amount float64) (*domain.Balance, error) {
+	if amount <= 0 {
+		return nil, fmt.Errorf("geçersiz miktar: %.2f", amount)
+	}
+
+	newAmount, err := s.repo.AtomicUpdate(userID, func(currentAmount float64) float64 {
+		if currentAmount < amount {
+			return -1
+		}
+		return currentAmount - amount
+	})
+
+	if err != nil {
+		s.logger.Error("Para çekme işlemi sırasında hata oluştu", map[string]interface{}{
+			"user_id": userID,
+			"amount":  amount,
+			"error":   err.Error(),
+		})
+		return nil, fmt.Errorf("para çekme işlemi yapılamadı: %w", err)
+	}
+
+	if newAmount < 0 {
+		balance, _ := s.GetUserBalance(userID)
+		s.logger.Error("Yetersiz bakiye", map[string]interface{}{
+			"user_id": userID,
+			"balance": balance.Amount,
+			"amount":  amount,
+		})
+		return nil, fmt.Errorf("yetersiz bakiye: %.2f, çekilmek istenen: %.2f", balance.Amount, amount)
+	}
+
+	auditLog := &domain.AuditLog{
+		EntityType: domain.EntityTypeBalance,
+		EntityID:   userID,
+		Action:     domain.ActionTypeUpdate,
+		Details:    fmt.Sprintf("Atomik para çekme: -%.2f", amount),
+		CreatedAt:  time.Now(),
+	}
+
+	if err := s.auditLogRepo.Create(auditLog); err != nil {
+		s.logger.Error("Denetim kaydı oluşturulamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
+	}
+
+	return &domain.Balance{
+		UserID:        userID,
+		Amount:        newAmount,
+		LastUpdatedAt: time.Now(),
+	}, nil
+}

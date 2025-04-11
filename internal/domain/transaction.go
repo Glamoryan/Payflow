@@ -17,6 +17,16 @@ const (
 	TransactionStatusFailed    TransactionStatus = "failed"
 )
 
+type TransactionStats struct {
+	Submitted      int64
+	Completed      int64
+	Failed         int64
+	Rejected       int64
+	AvgProcessTime time.Duration
+	QueueLength    int
+	QueueCapacity  int
+}
+
 type Transaction struct {
 	ID         int64             `json:"id"`
 	FromUserID *int64            `json:"from_user_id,omitempty"`
@@ -40,4 +50,8 @@ type TransactionService interface {
 	DepositFunds(userID int64, amount float64) (*Transaction, error)
 	WithdrawFunds(userID int64, amount float64) (*Transaction, error)
 	TransferFunds(fromUserID, toUserID int64, amount float64) (*Transaction, error)
+
+	GetWorkerPoolStats() (TransactionStats, error)
+	ProcessBatchTransactions(transactions []*Transaction) (processed int, failed int, err error)
+	Shutdown()
 }

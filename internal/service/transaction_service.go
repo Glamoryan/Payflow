@@ -2,8 +2,10 @@ package service
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
+	"payflow/internal/concurrent"
 	"payflow/internal/domain"
 	"payflow/pkg/logger"
 )
@@ -14,6 +16,12 @@ type TransactionService struct {
 	balanceSvc   domain.BalanceService
 	auditLogRepo domain.AuditLogRepository
 	logger       logger.Logger
+
+	// Worker pool ve istatistikler için alanlar
+	workerPool          *concurrent.WorkerPool
+	pendingTransactions sync.Map // ID -> Transaction
+	initialized         bool
+	initMutex           sync.Mutex
 }
 
 func NewTransactionService(
@@ -23,12 +31,49 @@ func NewTransactionService(
 	auditLogRepo domain.AuditLogRepository,
 	logger logger.Logger,
 ) domain.TransactionService {
-	return &TransactionService{
+	svc := &TransactionService{
 		repo:         repo,
 		balanceRepo:  balanceRepo,
 		balanceSvc:   balanceSvc,
 		auditLogRepo: auditLogRepo,
 		logger:       logger,
+		initialized:  false,
+	}
+
+	return svc
+}
+
+func (s *TransactionService) initWorkerPool() {
+	s.initMutex.Lock()
+	defer s.initMutex.Unlock()
+
+	if s.initialized {
+		return
+	}
+
+	processor := func(tx *domain.Transaction) error {
+		switch tx.Type {
+		case domain.TransactionTypeDeposit:
+			return s.processDeposit(tx)
+		case domain.TransactionTypeWithdraw:
+			return s.processWithdraw(tx)
+		case domain.TransactionTypeTransfer:
+			return s.processTransfer(tx)
+		default:
+			return fmt.Errorf("bilinmeyen işlem tipi: %s", tx.Type)
+		}
+	}
+
+	s.workerPool = concurrent.NewWorkerPool(5, 100, processor, s.logger)
+	s.workerPool.Start()
+	s.initialized = true
+
+	s.logger.Info("İşlem worker pool'u başlatıldı", map[string]interface{}{})
+}
+
+func (s *TransactionService) ensureWorkerPoolInitialized() {
+	if !s.initialized {
+		s.initWorkerPool()
 	}
 }
 
@@ -58,6 +103,8 @@ func (s *TransactionService) GetUserTransactions(userID int64) ([]*domain.Transa
 }
 
 func (s *TransactionService) DepositFunds(userID int64, amount float64) (*domain.Transaction, error) {
+	s.ensureWorkerPoolInitialized()
+
 	if amount <= 0 {
 		return nil, fmt.Errorf("geçersiz miktar: %.2f", amount)
 	}
@@ -73,7 +120,6 @@ func (s *TransactionService) DepositFunds(userID int64, amount float64) (*domain
 			s.logger.Error("Bakiye başlatılamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
 			return nil, fmt.Errorf("para yatırma işlemi yapılamadı: %w", err)
 		}
-		balance, _ = s.balanceRepo.FindByUserID(userID)
 	}
 
 	transaction := &domain.Transaction{
@@ -89,33 +135,21 @@ func (s *TransactionService) DepositFunds(userID int64, amount float64) (*domain
 		return nil, fmt.Errorf("para yatırma işlemi yapılamadı: %w", err)
 	}
 
-	newBalance := balance.Amount + amount
-	if err := s.balanceSvc.UpdateBalance(userID, newBalance); err != nil {
-		s.logger.Error("Bakiye güncellenemedi", map[string]interface{}{"user_id": userID, "error": err.Error()})
+	submitted := s.workerPool.Submit(transaction)
+	if !submitted {
+		s.logger.Error("İşlem kuyruğa eklenemedi", map[string]interface{}{"transaction_id": transaction.ID})
 		s.repo.UpdateStatus(transaction.ID, domain.TransactionStatusFailed)
-		return nil, fmt.Errorf("para yatırma işlemi yapılamadı: %w", err)
+		return nil, fmt.Errorf("işlem şu anda işlenemiyor, lütfen daha sonra tekrar deneyin")
 	}
 
-	if err := s.repo.UpdateStatus(transaction.ID, domain.TransactionStatusCompleted); err != nil {
-		s.logger.Error("İşlem durumu güncellenemedi", map[string]interface{}{"id": transaction.ID, "error": err.Error()})
-	}
-
-	auditLog := &domain.AuditLog{
-		EntityType: domain.EntityTypeTransaction,
-		EntityID:   transaction.ID,
-		Action:     domain.ActionTypeCreate,
-		Details:    fmt.Sprintf("Para yatırma işlemi: %.2f", amount),
-		CreatedAt:  time.Now(),
-	}
-
-	if err := s.auditLogRepo.Create(auditLog); err != nil {
-		s.logger.Error("Denetim kaydı oluşturulamadı", map[string]interface{}{"transaction_id": transaction.ID, "error": err.Error()})
-	}
+	s.pendingTransactions.Store(transaction.ID, transaction)
 
 	return transaction, nil
 }
 
 func (s *TransactionService) WithdrawFunds(userID int64, amount float64) (*domain.Transaction, error) {
+	s.ensureWorkerPoolInitialized()
+
 	if amount <= 0 {
 		return nil, fmt.Errorf("geçersiz miktar: %.2f", amount)
 	}
@@ -149,33 +183,21 @@ func (s *TransactionService) WithdrawFunds(userID int64, amount float64) (*domai
 		return nil, fmt.Errorf("para çekme işlemi yapılamadı: %w", err)
 	}
 
-	newBalance := balance.Amount - amount
-	if err := s.balanceSvc.UpdateBalance(userID, newBalance); err != nil {
-		s.logger.Error("Bakiye güncellenemedi", map[string]interface{}{"user_id": userID, "error": err.Error()})
+	submitted := s.workerPool.Submit(transaction)
+	if !submitted {
+		s.logger.Error("İşlem kuyruğa eklenemedi", map[string]interface{}{"transaction_id": transaction.ID})
 		s.repo.UpdateStatus(transaction.ID, domain.TransactionStatusFailed)
-		return nil, fmt.Errorf("para çekme işlemi yapılamadı: %w", err)
+		return nil, fmt.Errorf("işlem şu anda işlenemiyor, lütfen daha sonra tekrar deneyin")
 	}
 
-	if err := s.repo.UpdateStatus(transaction.ID, domain.TransactionStatusCompleted); err != nil {
-		s.logger.Error("İşlem durumu güncellenemedi", map[string]interface{}{"id": transaction.ID, "error": err.Error()})
-	}
-
-	auditLog := &domain.AuditLog{
-		EntityType: domain.EntityTypeTransaction,
-		EntityID:   transaction.ID,
-		Action:     domain.ActionTypeCreate,
-		Details:    fmt.Sprintf("Para çekme işlemi: %.2f", amount),
-		CreatedAt:  time.Now(),
-	}
-
-	if err := s.auditLogRepo.Create(auditLog); err != nil {
-		s.logger.Error("Denetim kaydı oluşturulamadı", map[string]interface{}{"transaction_id": transaction.ID, "error": err.Error()})
-	}
+	s.pendingTransactions.Store(transaction.ID, transaction)
 
 	return transaction, nil
 }
 
 func (s *TransactionService) TransferFunds(fromUserID, toUserID int64, amount float64) (*domain.Transaction, error) {
+	s.ensureWorkerPoolInitialized()
+
 	if amount <= 0 {
 		return nil, fmt.Errorf("geçersiz miktar: %.2f", amount)
 	}
@@ -211,7 +233,6 @@ func (s *TransactionService) TransferFunds(fromUserID, toUserID int64, amount fl
 			s.logger.Error("Alıcı bakiyesi başlatılamadı", map[string]interface{}{"user_id": toUserID, "error": err.Error()})
 			return nil, fmt.Errorf("transfer işlemi yapılamadı: %w", err)
 		}
-		toBalance, _ = s.balanceRepo.FindByUserID(toUserID)
 	}
 
 	transaction := &domain.Transaction{
@@ -228,40 +249,208 @@ func (s *TransactionService) TransferFunds(fromUserID, toUserID int64, amount fl
 		return nil, fmt.Errorf("transfer işlemi yapılamadı: %w", err)
 	}
 
-	fromNewBalance := fromBalance.Amount - amount
-	if err := s.balanceSvc.UpdateBalance(fromUserID, fromNewBalance); err != nil {
-		s.logger.Error("Gönderen bakiyesi güncellenemedi", map[string]interface{}{"user_id": fromUserID, "error": err.Error()})
+	submitted := s.workerPool.Submit(transaction)
+	if !submitted {
+		s.logger.Error("İşlem kuyruğa eklenemedi", map[string]interface{}{"transaction_id": transaction.ID})
 		s.repo.UpdateStatus(transaction.ID, domain.TransactionStatusFailed)
-		return nil, fmt.Errorf("transfer işlemi yapılamadı: %w", err)
+		return nil, fmt.Errorf("işlem şu anda işlenemiyor, lütfen daha sonra tekrar deneyin")
 	}
 
-	toNewBalance := toBalance.Amount + amount
-	if err := s.balanceSvc.UpdateBalance(toUserID, toNewBalance); err != nil {
-		s.logger.Error("Alıcı bakiyesi güncellenemedi", map[string]interface{}{"user_id": toUserID, "error": err.Error()})
+	s.pendingTransactions.Store(transaction.ID, transaction)
 
-		if err := s.balanceSvc.UpdateBalance(fromUserID, fromBalance.Amount); err != nil {
-			s.logger.Error("Gönderen bakiyesi geri yüklenemedi", map[string]interface{}{"user_id": fromUserID, "error": err.Error()})
-		}
+	return transaction, nil
+}
 
-		s.repo.UpdateStatus(transaction.ID, domain.TransactionStatusFailed)
-		return nil, fmt.Errorf("transfer işlemi yapılamadı: %w", err)
+func (s *TransactionService) processDeposit(tx *domain.Transaction) error {
+	userID := *tx.ToUserID
+
+	_, err := s.balanceSvc.DepositAtomically(userID, tx.Amount)
+	if err != nil {
+		s.logger.Error("Para yatırma işlemi başarısız oldu", map[string]interface{}{"transaction_id": tx.ID, "error": err.Error()})
+		s.repo.UpdateStatus(tx.ID, domain.TransactionStatusFailed)
+		return err
 	}
 
-	if err := s.repo.UpdateStatus(transaction.ID, domain.TransactionStatusCompleted); err != nil {
-		s.logger.Error("İşlem durumu güncellenemedi", map[string]interface{}{"id": transaction.ID, "error": err.Error()})
+	if err := s.repo.UpdateStatus(tx.ID, domain.TransactionStatusCompleted); err != nil {
+		s.logger.Error("İşlem durumu güncellenemedi", map[string]interface{}{"id": tx.ID, "error": err.Error()})
+		return err
 	}
 
 	auditLog := &domain.AuditLog{
 		EntityType: domain.EntityTypeTransaction,
-		EntityID:   transaction.ID,
+		EntityID:   tx.ID,
 		Action:     domain.ActionTypeCreate,
-		Details:    fmt.Sprintf("Para transferi: %.2f, %d -> %d", amount, fromUserID, toUserID),
+		Details:    fmt.Sprintf("Para yatırma işlemi: %.2f", tx.Amount),
 		CreatedAt:  time.Now(),
 	}
 
 	if err := s.auditLogRepo.Create(auditLog); err != nil {
-		s.logger.Error("Denetim kaydı oluşturulamadı", map[string]interface{}{"transaction_id": transaction.ID, "error": err.Error()})
+		s.logger.Error("Denetim kaydı oluşturulamadı", map[string]interface{}{"transaction_id": tx.ID, "error": err.Error()})
 	}
 
-	return transaction, nil
+	s.pendingTransactions.Delete(tx.ID)
+
+	return nil
+}
+
+func (s *TransactionService) processWithdraw(tx *domain.Transaction) error {
+	userID := *tx.FromUserID
+
+	_, err := s.balanceSvc.WithdrawAtomically(userID, tx.Amount)
+	if err != nil {
+		s.logger.Error("Para çekme işlemi başarısız oldu", map[string]interface{}{"transaction_id": tx.ID, "error": err.Error()})
+		s.repo.UpdateStatus(tx.ID, domain.TransactionStatusFailed)
+		return err
+	}
+
+	if err := s.repo.UpdateStatus(tx.ID, domain.TransactionStatusCompleted); err != nil {
+		s.logger.Error("İşlem durumu güncellenemedi", map[string]interface{}{"id": tx.ID, "error": err.Error()})
+		return err
+	}
+
+	auditLog := &domain.AuditLog{
+		EntityType: domain.EntityTypeTransaction,
+		EntityID:   tx.ID,
+		Action:     domain.ActionTypeCreate,
+		Details:    fmt.Sprintf("Para çekme işlemi: %.2f", tx.Amount),
+		CreatedAt:  time.Now(),
+	}
+
+	if err := s.auditLogRepo.Create(auditLog); err != nil {
+		s.logger.Error("Denetim kaydı oluşturulamadı", map[string]interface{}{"transaction_id": tx.ID, "error": err.Error()})
+	}
+
+	s.pendingTransactions.Delete(tx.ID)
+
+	return nil
+}
+
+func (s *TransactionService) processTransfer(tx *domain.Transaction) error {
+	fromUserID := *tx.FromUserID
+	toUserID := *tx.ToUserID
+
+	_, err := s.balanceSvc.WithdrawAtomically(fromUserID, tx.Amount)
+	if err != nil {
+		s.logger.Error("Transfer işlemi sırasında para çekme başarısız oldu", map[string]interface{}{
+			"transaction_id": tx.ID,
+			"from_user_id":   fromUserID,
+			"error":          err.Error(),
+		})
+		s.repo.UpdateStatus(tx.ID, domain.TransactionStatusFailed)
+		return err
+	}
+
+	_, err = s.balanceSvc.DepositAtomically(toUserID, tx.Amount)
+	if err != nil {
+
+		_, rollbackErr := s.balanceSvc.DepositAtomically(fromUserID, tx.Amount)
+		if rollbackErr != nil {
+			s.logger.Error("Geri alma işlemi başarısız oldu", map[string]interface{}{
+				"transaction_id": tx.ID,
+				"from_user_id":   fromUserID,
+				"error":          rollbackErr.Error(),
+			})
+		}
+
+		s.logger.Error("Transfer işlemi sırasında para yatırma başarısız oldu", map[string]interface{}{
+			"transaction_id": tx.ID,
+			"to_user_id":     toUserID,
+			"error":          err.Error(),
+		})
+		s.repo.UpdateStatus(tx.ID, domain.TransactionStatusFailed)
+		return err
+	}
+
+	if err := s.repo.UpdateStatus(tx.ID, domain.TransactionStatusCompleted); err != nil {
+		s.logger.Error("İşlem durumu güncellenemedi", map[string]interface{}{"id": tx.ID, "error": err.Error()})
+		return err
+	}
+
+	auditLog := &domain.AuditLog{
+		EntityType: domain.EntityTypeTransaction,
+		EntityID:   tx.ID,
+		Action:     domain.ActionTypeCreate,
+		Details:    fmt.Sprintf("Para transferi: %.2f, %d -> %d", tx.Amount, fromUserID, toUserID),
+		CreatedAt:  time.Now(),
+	}
+
+	if err := s.auditLogRepo.Create(auditLog); err != nil {
+		s.logger.Error("Denetim kaydı oluşturulamadı", map[string]interface{}{"transaction_id": tx.ID, "error": err.Error()})
+	}
+
+	s.pendingTransactions.Delete(tx.ID)
+
+	return nil
+}
+
+func (s *TransactionService) GetWorkerPoolStats() (domain.TransactionStats, error) {
+	s.ensureWorkerPoolInitialized()
+
+	concurrentStats := s.workerPool.GetStats()
+	stats := domain.TransactionStats{
+		Submitted:      concurrentStats.Submitted,
+		Completed:      concurrentStats.Completed,
+		Failed:         concurrentStats.Failed,
+		Rejected:       concurrentStats.Rejected,
+		AvgProcessTime: concurrentStats.AvgProcessTime,
+		QueueLength:    s.workerPool.QueueLength(),
+		QueueCapacity:  s.workerPool.QueueCapacity(),
+	}
+
+	return stats, nil
+}
+
+func (s *TransactionService) ProcessBatchTransactions(transactions []*domain.Transaction) (processed int, failed int, err error) {
+	s.ensureWorkerPoolInitialized()
+
+	if len(transactions) == 0 {
+		return 0, 0, nil
+	}
+
+	var wg sync.WaitGroup
+	processMutex := sync.Mutex{}
+
+	processedCount := 0
+	failedCount := 0
+
+	for _, tx := range transactions {
+		wg.Add(1)
+
+		go func(transaction *domain.Transaction) {
+			defer wg.Done()
+
+			var processErr error
+			switch transaction.Type {
+			case domain.TransactionTypeDeposit:
+				processErr = s.processDeposit(transaction)
+			case domain.TransactionTypeWithdraw:
+				processErr = s.processWithdraw(transaction)
+			case domain.TransactionTypeTransfer:
+				processErr = s.processTransfer(transaction)
+			default:
+				processErr = fmt.Errorf("bilinmeyen işlem tipi: %s", transaction.Type)
+			}
+
+			processMutex.Lock()
+			if processErr != nil {
+				failedCount++
+			} else {
+				processedCount++
+			}
+			processMutex.Unlock()
+		}(tx)
+	}
+	wg.Wait()
+
+	return processedCount, failedCount, nil
+}
+
+func (s *TransactionService) Shutdown() {
+	s.initMutex.Lock()
+	defer s.initMutex.Unlock()
+
+	if s.initialized {
+		s.workerPool.Stop()
+		s.initialized = false
+	}
 }

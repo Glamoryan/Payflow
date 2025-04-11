@@ -93,4 +93,30 @@ curl -X POST http://localhost:8080/api/audit-logs -H "Content-Type: application/
      -d '{"entity_type": "user", "entity_id": 1, "action": "update", "details": "Manuel güncelleme işlemi"}'
 ```
 
-# Uygulamayı durdurma (Ctrl+C)
+# Thread-Safe & Multiple Transactions
+
+```bash
+# Thread-Safe Deposit
+curl --location 'http://localhost:8080/api/transactions/deposit' \
+--header 'Content-Type: application/json' \
+--data '{
+    "user_id": 1,
+    "amount": 500,
+    "description": "Paralel yükleme 1"
+}'
+
+# Transaction stats
+curl --location 'http://localhost:8080/api/transactions/stats'
+
+# Multiple Transactions
+curl --location 'http://localhost:8080/api/transactions/batch' \
+--header 'Content-Type: application/json' \
+--data '{
+  "transactions": [
+    {"sender_id": 1, "receiver_id": 2, "amount": 100, "description": "Test işlem 1"},
+    {"sender_id": 1, "receiver_id": 3, "amount": 150, "description": "Test işlem 2"},
+    {"sender_id": 2, "receiver_id": 1, "amount": 75, "description": "Test işlem 3"},
+    {"sender_id": 3, "receiver_id": 2, "amount": 200, "description": "Test işlem 4"}
+  ]
+}'
+```

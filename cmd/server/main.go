@@ -41,6 +41,37 @@ func main() {
 	balanceService := appFactory.GetBalanceService()
 	auditLogService := appFactory.GetAuditLogService()
 
+	defer func() {
+		log.Info("TransactionService kapatılıyor...", map[string]interface{}{})
+		transactionService.Shutdown()
+	}()
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				stats, err := transactionService.GetWorkerPoolStats()
+				if err != nil {
+					log.Error("Worker pool istatistikleri alınamadı", map[string]interface{}{"error": err.Error()})
+					continue
+				}
+
+				log.Info("Worker Pool İstatistikleri", map[string]interface{}{
+					"submitted":        stats.Submitted,
+					"completed":        stats.Completed,
+					"failed":           stats.Failed,
+					"rejected":         stats.Rejected,
+					"avg_process_time": stats.AvgProcessTime.String(),
+					"queue_length":     stats.QueueLength,
+					"queue_capacity":   stats.QueueCapacity,
+				})
+			}
+		}
+	}()
+
 	userHandler := api.NewUserHandler(userService, log)
 	transactionHandler := api.NewTransactionHandler(transactionService, log)
 	balanceHandler := api.NewBalanceHandler(balanceService, log)
