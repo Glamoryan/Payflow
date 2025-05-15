@@ -29,7 +29,7 @@ func NewMigrationService(db *sql.DB, logger logger.Logger) *MigrationService {
 func (m *MigrationService) InitMigrationTable() error {
 	query := `
     CREATE TABLE IF NOT EXISTS migrations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
         applied_at TIMESTAMP NOT NULL
     )
@@ -46,7 +46,7 @@ func (m *MigrationService) InitMigrationTable() error {
 
 func (m *MigrationService) IsMigrationApplied(name string) (bool, error) {
 	var count int
-	query := "SELECT COUNT(*) FROM migrations WHERE name = ?"
+	query := "SELECT COUNT(*) FROM migrations WHERE name = $1"
 	err := m.db.QueryRow(query, name).Scan(&count)
 	if err != nil {
 		m.logger.Error("Migration durumu kontrol edilemedi", map[string]interface{}{"name": name, "error": err.Error()})
@@ -57,7 +57,7 @@ func (m *MigrationService) IsMigrationApplied(name string) (bool, error) {
 }
 
 func (m *MigrationService) RecordMigration(name string) error {
-	query := "INSERT INTO migrations (name, applied_at) VALUES (?, ?)"
+	query := "INSERT INTO migrations (name, applied_at) VALUES ($1, $2)"
 	_, err := m.db.Exec(query, name, time.Now())
 	if err != nil {
 		m.logger.Error("Migration kaydedilemedi", map[string]interface{}{"name": name, "error": err.Error()})
@@ -141,7 +141,7 @@ func (m *MigrationService) RunMigrations() error {
 func CreateUsersTable(db *sql.DB) error {
 	query := `
     CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         username TEXT NOT NULL UNIQUE,
         email TEXT NOT NULL UNIQUE,
         password_hash TEXT NOT NULL,
@@ -159,10 +159,10 @@ func CreateUsersTable(db *sql.DB) error {
 func CreateTransactionsTable(db *sql.DB) error {
 	query := `
     CREATE TABLE IF NOT EXISTS transactions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         from_user_id INTEGER,
         to_user_id INTEGER,
-        amount DECIMAL(18,2) NOT NULL,
+        amount NUMERIC(18,2) NOT NULL,
         type TEXT NOT NULL,
         status TEXT NOT NULL,
         created_at TIMESTAMP NOT NULL,
@@ -179,7 +179,7 @@ func CreateBalancesTable(db *sql.DB) error {
 	query := `
     CREATE TABLE IF NOT EXISTS balances (
         user_id INTEGER PRIMARY KEY,
-        amount DECIMAL(18,2) NOT NULL DEFAULT 0,
+        amount NUMERIC(18,2) NOT NULL DEFAULT 0,
         last_updated_at TIMESTAMP NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users (id)
     )
@@ -192,7 +192,7 @@ func CreateBalancesTable(db *sql.DB) error {
 func CreateAuditLogsTable(db *sql.DB) error {
 	query := `
     CREATE TABLE IF NOT EXISTS audit_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         entity_type TEXT NOT NULL,
         entity_id INTEGER NOT NULL,
         action TEXT NOT NULL,
@@ -208,16 +208,17 @@ func CreateAuditLogsTable(db *sql.DB) error {
 func CreateBalanceHistoryTable(db *sql.DB) error {
 	query := `
     CREATE TABLE IF NOT EXISTS balance_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         user_id INTEGER NOT NULL,
-        amount DECIMAL(18,2) NOT NULL,
-        previous_amount DECIMAL(18,2) NOT NULL,
+        amount NUMERIC(18,2) NOT NULL,
+        previous_amount NUMERIC(18,2) NOT NULL,
         transaction_id INTEGER,
         operation TEXT NOT NULL,
         created_at TIMESTAMP NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users (id),
         FOREIGN KEY (transaction_id) REFERENCES transactions (id)
     );
+    
     CREATE INDEX IF NOT EXISTS balance_history_user_id_idx ON balance_history (user_id);
     CREATE INDEX IF NOT EXISTS balance_history_created_at_idx ON balance_history (created_at);
     `

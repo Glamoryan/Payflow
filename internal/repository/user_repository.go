@@ -25,7 +25,7 @@ func (r *UserRepository) FindByID(id int64) (*domain.User, error) {
 	query := `
 		SELECT id, username, email, password_hash, role, api_key, created_at, updated_at
 		FROM users
-		WHERE id = ?
+		WHERE id = $1
 	`
 
 	var user domain.User
@@ -55,7 +55,7 @@ func (r *UserRepository) FindByUsername(username string) (*domain.User, error) {
 	query := `
 		SELECT id, username, email, password_hash, role, api_key, created_at, updated_at
 		FROM users
-		WHERE username = ?
+		WHERE username = $1
 	`
 
 	var user domain.User
@@ -87,7 +87,7 @@ func (r *UserRepository) FindByEmail(email string) (*domain.User, error) {
 	query := `
 		SELECT id, username, email, password_hash, role, api_key, created_at, updated_at
 		FROM users
-		WHERE email = ?
+		WHERE email = $1
 	`
 
 	err := r.db.QueryRow(query, email).Scan(
@@ -119,7 +119,7 @@ func (r *UserRepository) FindByApiKey(apiKey string) (*domain.User, error) {
 	query := `
 		SELECT id, username, email, password_hash, role, api_key, created_at, updated_at
 		FROM users
-		WHERE api_key = ?
+		WHERE api_key = $1
 	`
 
 	err := r.db.QueryRow(query, apiKey).Scan(
@@ -148,7 +148,7 @@ func (r *UserRepository) FindByApiKey(apiKey string) (*domain.User, error) {
 func (r *UserRepository) Create(user *domain.User) error {
 	query := `
 		INSERT INTO users (username, email, password_hash, role, api_key, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id
 	`
 
@@ -182,8 +182,8 @@ func (r *UserRepository) Create(user *domain.User) error {
 func (r *UserRepository) Update(user *domain.User) error {
 	query := `
 		UPDATE users
-		SET username = ?, email = ?, password_hash = ?, role = ?, api_key = ?, updated_at = ?
-		WHERE id = ?
+		SET username = $1, email = $2, password_hash = $3, role = $4, api_key = $5, updated_at = $6
+		WHERE id = $7
 	`
 
 	user.UpdatedAt = time.Now()
@@ -208,7 +208,7 @@ func (r *UserRepository) Update(user *domain.User) error {
 }
 
 func (r *UserRepository) Delete(id int64) error {
-	query := `DELETE FROM users WHERE id = ?`
+	query := `DELETE FROM users WHERE id = $1`
 
 	_, err := r.db.Exec(query, id)
 

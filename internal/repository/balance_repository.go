@@ -130,7 +130,7 @@ func (r *BalanceRepository) AtomicUpdate(userID int64, updateFn func(currentAmou
 
 	newAmount := updateFn(balance.Amount)
 
-	query := `UPDATE balances SET amount = ?, last_updated_at = ? WHERE user_id = ?`
+	query := `UPDATE balances SET amount = $1, last_updated_at = $2 WHERE user_id = $3`
 
 	now := time.Now()
 	lastUpdatedAt := now.Format(time.RFC3339)

@@ -1,9 +1,12 @@
 package service
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
-	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"payflow/internal/domain"
 	"payflow/pkg/logger"
@@ -13,17 +16,26 @@ type BalanceService struct {
 	repo         domain.BalanceRepository
 	auditLogRepo domain.AuditLogRepository
 	logger       logger.Logger
+	redisClient  *redis.Client
+	ctx          context.Context
 }
 
-func NewBalanceService(repo domain.BalanceRepository, auditLogRepo domain.AuditLogRepository, logger logger.Logger) domain.BalanceService {
+func NewBalanceService(repo domain.BalanceRepository, auditLogRepo domain.AuditLogRepository, logger logger.Logger, redisClient *redis.Client) domain.BalanceService {
 	return &BalanceService{
 		repo:         repo,
 		auditLogRepo: auditLogRepo,
 		logger:       logger,
+		redisClient:  redisClient,
+		ctx:          context.Background(),
 	}
 }
 
 func (s *BalanceService) GetUserBalance(userID int64) (*domain.Balance, error) {
+	cachedBalance, err := s.getCachedBalanceFromRedis(userID)
+	if err == nil && cachedBalance != nil {
+		return cachedBalance, nil
+	}
+
 	balance, err := s.repo.FindByUserID(userID)
 	if err != nil {
 		s.logger.Error("Bakiye bulunamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
@@ -34,6 +46,8 @@ func (s *BalanceService) GetUserBalance(userID int64) (*domain.Balance, error) {
 		s.logger.Error("Bakiye bulunamadı", map[string]interface{}{"user_id": userID})
 		return nil, fmt.Errorf("kullanıcının bakiyesi bulunamadı: %d", userID)
 	}
+
+	s.cacheBalanceToRedis(balance)
 
 	return balance, nil
 }
@@ -97,6 +111,8 @@ func (s *BalanceService) UpdateBalance(userID int64, amount float64) error {
 		return fmt.Errorf("bakiye güncellenemedi: %w", err)
 	}
 
+	s.cacheBalanceToRedis(balance)
+
 	auditLog := &domain.AuditLog{
 		EntityType: domain.EntityTypeBalance,
 		EntityID:   userID,
@@ -110,6 +126,34 @@ func (s *BalanceService) UpdateBalance(userID int64, amount float64) error {
 	}
 
 	return nil
+}
+
+func (s *BalanceService) GetBalanceHistory(userID int64, limit, offset int) ([]*domain.BalanceHistory, error) {
+	history, err := s.repo.GetBalanceHistory(userID, limit, offset)
+	if err != nil {
+		s.logger.Error("Bakiye geçmişi alınamadı", map[string]interface{}{
+			"user_id": userID,
+			"error":   err.Error(),
+		})
+		return nil, fmt.Errorf("bakiye geçmişi alınamadı: %w", err)
+	}
+
+	return history, nil
+}
+
+func (s *BalanceService) GetBalanceHistoryByDateRange(userID int64, startDate, endDate time.Time) ([]*domain.BalanceHistory, error) {
+	history, err := s.repo.GetBalanceHistoryByDateRange(userID, startDate, endDate)
+	if err != nil {
+		s.logger.Error("Bakiye geçmişi alınamadı", map[string]interface{}{
+			"user_id":    userID,
+			"start_date": startDate,
+			"end_date":   endDate,
+			"error":      err.Error(),
+		})
+		return nil, fmt.Errorf("bakiye geçmişi alınamadı: %w", err)
+	}
+
+	return history, nil
 }
 
 func (s *BalanceService) DepositAtomically(userID int64, amount float64) (*domain.Balance, error) {
@@ -130,6 +174,14 @@ func (s *BalanceService) DepositAtomically(userID int64, amount float64) (*domai
 		return nil, fmt.Errorf("para yatırma işlemi yapılamadı: %w", err)
 	}
 
+	balanceUpdated := &domain.Balance{
+		UserID:        userID,
+		Amount:        newAmount,
+		LastUpdatedAt: time.Now(),
+	}
+
+	s.cacheBalanceToRedis(balanceUpdated)
+
 	auditLog := &domain.AuditLog{
 		EntityType: domain.EntityTypeBalance,
 		EntityID:   userID,
@@ -142,11 +194,7 @@ func (s *BalanceService) DepositAtomically(userID int64, amount float64) (*domai
 		s.logger.Error("Denetim kaydı oluşturulamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
 	}
 
-	return &domain.Balance{
-		UserID:        userID,
-		Amount:        newAmount,
-		LastUpdatedAt: time.Now(),
-	}, nil
+	return balanceUpdated, nil
 }
 
 func (s *BalanceService) WithdrawAtomically(userID int64, amount float64) (*domain.Balance, error) {
@@ -187,6 +235,14 @@ func (s *BalanceService) WithdrawAtomically(userID int64, amount float64) (*doma
 		return nil, fmt.Errorf("yetersiz bakiye: %.2f, çekilmek istenen: %.2f", balance.Amount, amount)
 	}
 
+	balanceUpdated := &domain.Balance{
+		UserID:        userID,
+		Amount:        newAmount,
+		LastUpdatedAt: time.Now(),
+	}
+
+	s.cacheBalanceToRedis(balanceUpdated)
+
 	history := &domain.BalanceHistory{
 		UserID:         userID,
 		Amount:         newAmount,
@@ -215,66 +271,97 @@ func (s *BalanceService) WithdrawAtomically(userID int64, amount float64) (*doma
 		s.logger.Error("Denetim kaydı oluşturulamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
 	}
 
-	return &domain.Balance{
-		UserID:        userID,
-		Amount:        newAmount,
-		LastUpdatedAt: time.Now(),
-	}, nil
+	return balanceUpdated, nil
 }
 
-func (s *BalanceService) GetBalanceHistory(userID int64, limit, offset int) ([]*domain.BalanceHistory, error) {
-	history, err := s.repo.GetBalanceHistory(userID, limit, offset)
-	if err != nil {
-		s.logger.Error("Bakiye geçmişi alınamadı", map[string]interface{}{
+func (s *BalanceService) getCachedBalanceFromRedis(userID int64) (*domain.Balance, error) {
+	key := fmt.Sprintf("balance:%d", userID)
+	data, err := s.redisClient.Get(s.ctx, key).Result()
+
+	if err == redis.Nil {
+		return nil, nil
+	} else if err != nil {
+		s.logger.Error("Redis'ten bakiye alınamadı", map[string]interface{}{
 			"user_id": userID,
 			"error":   err.Error(),
 		})
-		return nil, fmt.Errorf("bakiye geçmişi alınamadı: %w", err)
+		return nil, err
 	}
 
-	return history, nil
-}
-
-func (s *BalanceService) GetBalanceHistoryByDateRange(userID int64, startDate, endDate time.Time) ([]*domain.BalanceHistory, error) {
-	history, err := s.repo.GetBalanceHistoryByDateRange(userID, startDate, endDate)
-	if err != nil {
-		s.logger.Error("Bakiye geçmişi alınamadı", map[string]interface{}{
-			"user_id":    userID,
-			"start_date": startDate,
-			"end_date":   endDate,
-			"error":      err.Error(),
+	var balance domain.Balance
+	if err := json.Unmarshal([]byte(data), &balance); err != nil {
+		s.logger.Error("Redis'ten alınan veri çözümlenemedi", map[string]interface{}{
+			"user_id": userID,
+			"error":   err.Error(),
 		})
-		return nil, fmt.Errorf("bakiye geçmişi alınamadı: %w", err)
+		return nil, err
 	}
 
-	return history, nil
+	s.logger.Info("Redis önbelleğinden bakiye alındı", map[string]interface{}{
+		"user_id": userID,
+	})
+
+	return &balance, nil
 }
 
-var balanceCache = make(map[int64]*domain.Balance)
-var balanceCacheMutex sync.RWMutex
+func (s *BalanceService) cacheBalanceToRedis(balance *domain.Balance) error {
+	key := fmt.Sprintf("balance:%d", balance.UserID)
+	data, err := json.Marshal(balance)
+	if err != nil {
+		s.logger.Error("Bakiye JSON formatına dönüştürülemedi", map[string]interface{}{
+			"user_id": balance.UserID,
+			"error":   err.Error(),
+		})
+		return err
+	}
+
+	err = s.redisClient.Set(s.ctx, key, data, 15*time.Minute).Err()
+	if err != nil {
+		s.logger.Error("Bakiye Redis'e kaydedilemedi", map[string]interface{}{
+			"user_id": balance.UserID,
+			"error":   err.Error(),
+		})
+		return err
+	}
+
+	s.logger.Info("Bakiye Redis önbelleğine kaydedildi", map[string]interface{}{
+		"user_id": balance.UserID,
+	})
+
+	return nil
+}
 
 func (s *BalanceService) GetCachedBalance(userID int64) (*domain.Balance, error) {
-	balanceCacheMutex.RLock()
-	cachedBalance, exists := balanceCache[userID]
-	balanceCacheMutex.RUnlock()
-
-	if exists {
-		s.logger.Info("Önbellekten bakiye alındı", map[string]interface{}{
-			"user_id": userID,
-		})
-		return cachedBalance, nil
+	balance, err := s.getCachedBalanceFromRedis(userID)
+	if err == nil && balance != nil {
+		return balance, nil
 	}
 
-	balance, err := s.GetUserBalance(userID)
+	balance, err = s.GetUserBalance(userID)
 	if err != nil {
 		return nil, err
 	}
 
-	balanceCacheMutex.Lock()
-	balanceCache[userID] = balance
-	balanceCacheMutex.Unlock()
-
+	s.cacheBalanceToRedis(balance)
 	return balance, nil
+}
+
+func (s *BalanceService) InvalidateCache(userID int64) error {
+	key := fmt.Sprintf("balance:%d", userID)
+	err := s.redisClient.Del(s.ctx, key).Err()
+	if err != nil {
+		s.logger.Error("Redis önbelleği temizlenemedi", map[string]interface{}{
+			"user_id": userID,
+			"error":   err.Error(),
+		})
+		return err
+	}
+
+	s.logger.Info("Redis önbelleği temizlendi", map[string]interface{}{
+		"user_id": userID,
+	})
+
+	return nil
 }
 
 func (s *BalanceService) RecalculateBalance(userID int64) (*domain.Balance, error) {
@@ -306,9 +393,7 @@ func (s *BalanceService) RecalculateBalance(userID int64) (*domain.Balance, erro
 				return nil, fmt.Errorf("bakiye güncellenemedi: %w", err)
 			}
 
-			balanceCacheMutex.Lock()
-			balanceCache[userID] = balance
-			balanceCacheMutex.Unlock()
+			s.cacheBalanceToRedis(balance)
 
 			s.logger.Info("Bakiye düzeltildi", map[string]interface{}{
 				"user_id":    userID,

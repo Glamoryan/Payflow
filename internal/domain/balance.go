@@ -43,4 +43,5 @@ type BalanceService interface {
 
 	GetCachedBalance(userID int64) (*Balance, error)
 	RecalculateBalance(userID int64) (*Balance, error)
+	InvalidateCache(userID int64) error
 }
