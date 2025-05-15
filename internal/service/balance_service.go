@@ -10,6 +10,8 @@ import (
 
 	"payflow/internal/domain"
 	"payflow/pkg/logger"
+	"payflow/pkg/metrics"
+	"payflow/pkg/tracing"
 )
 
 type BalanceService struct {
@@ -31,24 +33,57 @@ func NewBalanceService(repo domain.BalanceRepository, auditLogRepo domain.AuditL
 }
 
 func (s *BalanceService) GetUserBalance(userID int64) (*domain.Balance, error) {
+	ctx, span := tracing.StartSpan(context.Background(), "BalanceService.GetUserBalance")
+	defer span.End()
+
+	tracing.AddAttribute(span, "user_id", userID)
+
+	startTime := time.Now()
 	cachedBalance, err := s.getCachedBalanceFromRedis(userID)
 	if err == nil && cachedBalance != nil {
+		metrics.RecordCacheHit()
+		tracing.AddAttribute(span, "cache_hit", true)
+
+		s.logger.DebugContext(ctx, "Bakiye önbellekten alındı", map[string]interface{}{
+			"user_id": userID,
+		})
 		return cachedBalance, nil
 	}
 
+	metrics.RecordCacheMiss()
+	tracing.AddAttribute(span, "cache_hit", false)
+
+	startTime = time.Now()
 	balance, err := s.repo.FindByUserID(userID)
+	metrics.RecordDatabaseOperation("read", "balance", time.Since(startTime))
+
 	if err != nil {
-		s.logger.Error("Bakiye bulunamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
+		tracing.RecordError(span, err, "Bakiye veritabanından alınamadı")
+		s.logger.ErrorContext(ctx, "Bakiye bulunamadı", map[string]interface{}{
+			"user_id": userID,
+			"error":   err.Error(),
+		})
 		return nil, fmt.Errorf("bakiye bulunamadı: %w", err)
 	}
 
 	if balance == nil {
-		s.logger.Error("Bakiye bulunamadı", map[string]interface{}{"user_id": userID})
-		return nil, fmt.Errorf("kullanıcının bakiyesi bulunamadı: %d", userID)
+		err := fmt.Errorf("kullanıcının bakiyesi bulunamadı: %d", userID)
+		tracing.RecordError(span, err, "Bakiye bulunamadı")
+		s.logger.ErrorContext(ctx, "Bakiye bulunamadı", map[string]interface{}{
+			"user_id": userID,
+		})
+		return nil, err
 	}
 
-	s.cacheBalanceToRedis(balance)
+	err = s.cacheBalanceToRedis(balance)
+	if err != nil {
+		s.logger.WarnContext(ctx, "Bakiye önbelleğe eklenemedi", map[string]interface{}{
+			"user_id": userID,
+			"error":   err.Error(),
+		})
+	}
 
+	tracing.AddAttribute(span, "balance_amount", balance.Amount)
 	return balance, nil
 }
 
@@ -157,15 +192,26 @@ func (s *BalanceService) GetBalanceHistoryByDateRange(userID int64, startDate, e
 }
 
 func (s *BalanceService) DepositAtomically(userID int64, amount float64) (*domain.Balance, error) {
+	ctx, span := tracing.StartSpan(context.Background(), "BalanceService.DepositAtomically")
+	defer span.End()
+
+	tracing.AddAttribute(span, "user_id", userID)
+	tracing.AddAttribute(span, "amount", amount)
+
 	if amount <= 0 {
-		return nil, fmt.Errorf("geçersiz miktar: %.2f", amount)
+		err := fmt.Errorf("geçersiz miktar: %.2f", amount)
+		tracing.RecordError(span, err, "Geçersiz para yatırma miktarı")
+		return nil, err
 	}
 
+	startTime := time.Now()
 	newAmount, err := s.repo.AtomicUpdate(userID, func(currentAmount float64) float64 {
 		return currentAmount + amount
 	})
+	metrics.RecordDatabaseOperation("update", "balance", time.Since(startTime))
 
 	if err != nil {
+		tracing.RecordError(span, err, "Para yatırma işlemi sırasında hata")
 		s.logger.Error("Para yatırma işlemi sırasında hata oluştu", map[string]interface{}{
 			"user_id": userID,
 			"amount":  amount,
@@ -182,6 +228,9 @@ func (s *BalanceService) DepositAtomically(userID int64, amount float64) (*domai
 
 	s.cacheBalanceToRedis(balanceUpdated)
 
+	metrics.RecordTransaction("deposit", "completed")
+	tracing.AddAttribute(span, "new_balance", newAmount)
+
 	auditLog := &domain.AuditLog{
 		EntityType: domain.EntityTypeBalance,
 		EntityID:   userID,
@@ -190,34 +239,57 @@ func (s *BalanceService) DepositAtomically(userID int64, amount float64) (*domai
 		CreatedAt:  time.Now(),
 	}
 
+	startTime = time.Now()
 	if err := s.auditLogRepo.Create(auditLog); err != nil {
 		s.logger.Error("Denetim kaydı oluşturulamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
 	}
+	metrics.RecordDatabaseOperation("create", "audit_log", time.Since(startTime))
+
+	s.logger.InfoContext(ctx, "Para yatırma işlemi başarıyla tamamlandı", map[string]interface{}{
+		"user_id":     userID,
+		"amount":      amount,
+		"new_balance": newAmount,
+	})
 
 	return balanceUpdated, nil
 }
 
 func (s *BalanceService) WithdrawAtomically(userID int64, amount float64) (*domain.Balance, error) {
+	ctx, span := tracing.StartSpan(context.Background(), "BalanceService.WithdrawAtomically")
+	defer span.End()
+
+	tracing.AddAttribute(span, "user_id", userID)
+	tracing.AddAttribute(span, "amount", amount)
+
 	if amount <= 0 {
-		return nil, fmt.Errorf("geçersiz miktar: %.2f", amount)
+		err := fmt.Errorf("geçersiz miktar: %.2f", amount)
+		tracing.RecordError(span, err, "Geçersiz para çekme miktarı")
+		return nil, err
 	}
 
+	startTime := time.Now()
 	currentBalance, err := s.GetUserBalance(userID)
+	metrics.RecordDatabaseOperation("read", "balance", time.Since(startTime))
+
 	if err != nil {
+		tracing.RecordError(span, err, "Mevcut bakiye alınamadı")
 		return nil, err
 	}
 
 	previousAmount := currentBalance.Amount
 
+	startTime = time.Now()
 	newAmount, err := s.repo.AtomicUpdate(userID, func(currentAmount float64) float64 {
 		if currentAmount < amount {
 			return -1
 		}
 		return currentAmount - amount
 	})
+	metrics.RecordDatabaseOperation("update", "balance", time.Since(startTime))
 
 	if err != nil {
-		s.logger.Error("Para çekme işlemi sırasında hata oluştu", map[string]interface{}{
+		tracing.RecordError(span, err, "Para çekme işlemi sırasında hata")
+		s.logger.ErrorContext(ctx, "Para çekme işlemi sırasında hata oluştu", map[string]interface{}{
 			"user_id": userID,
 			"amount":  amount,
 			"error":   err.Error(),
@@ -226,13 +298,14 @@ func (s *BalanceService) WithdrawAtomically(userID int64, amount float64) (*doma
 	}
 
 	if newAmount < 0 {
-		balance, _ := s.GetUserBalance(userID)
-		s.logger.Error("Yetersiz bakiye", map[string]interface{}{
+		err := fmt.Errorf("yetersiz bakiye: %.2f, çekilmek istenen: %.2f", currentBalance.Amount, amount)
+		tracing.RecordError(span, err, "Yetersiz bakiye")
+		s.logger.ErrorContext(ctx, "Yetersiz bakiye", map[string]interface{}{
 			"user_id": userID,
-			"balance": balance.Amount,
+			"balance": currentBalance.Amount,
 			"amount":  amount,
 		})
-		return nil, fmt.Errorf("yetersiz bakiye: %.2f, çekilmek istenen: %.2f", balance.Amount, amount)
+		return nil, err
 	}
 
 	balanceUpdated := &domain.Balance{
@@ -243,6 +316,9 @@ func (s *BalanceService) WithdrawAtomically(userID int64, amount float64) (*doma
 
 	s.cacheBalanceToRedis(balanceUpdated)
 
+	metrics.RecordTransaction("withdraw", "completed")
+	tracing.AddAttribute(span, "new_balance", newAmount)
+
 	history := &domain.BalanceHistory{
 		UserID:         userID,
 		Amount:         newAmount,
@@ -252,12 +328,14 @@ func (s *BalanceService) WithdrawAtomically(userID int64, amount float64) (*doma
 		CreatedAt:      time.Now(),
 	}
 
+	startTime = time.Now()
 	if err := s.repo.AddBalanceHistory(history); err != nil {
-		s.logger.Error("Bakiye geçmişi eklenemedi", map[string]interface{}{
+		s.logger.WarnContext(ctx, "Bakiye geçmişi eklenemedi", map[string]interface{}{
 			"user_id": userID,
 			"error":   err.Error(),
 		})
 	}
+	metrics.RecordDatabaseOperation("create", "balance_history", time.Since(startTime))
 
 	auditLog := &domain.AuditLog{
 		EntityType: domain.EntityTypeBalance,
@@ -267,9 +345,20 @@ func (s *BalanceService) WithdrawAtomically(userID int64, amount float64) (*doma
 		CreatedAt:  time.Now(),
 	}
 
+	startTime = time.Now()
 	if err := s.auditLogRepo.Create(auditLog); err != nil {
-		s.logger.Error("Denetim kaydı oluşturulamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
+		s.logger.WarnContext(ctx, "Denetim kaydı oluşturulamadı", map[string]interface{}{
+			"user_id": userID,
+			"error":   err.Error(),
+		})
 	}
+	metrics.RecordDatabaseOperation("create", "audit_log", time.Since(startTime))
+
+	s.logger.InfoContext(ctx, "Para çekme işlemi başarıyla tamamlandı", map[string]interface{}{
+		"user_id":     userID,
+		"amount":      amount,
+		"new_balance": newAmount,
+	})
 
 	return balanceUpdated, nil
 }

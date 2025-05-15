@@ -10,10 +10,14 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"payflow/internal/api"
+	"payflow/internal/api/middleware"
 	"payflow/internal/database"
 	"payflow/pkg/factory"
+	"payflow/pkg/metrics"
+	"payflow/pkg/tracing"
 )
 
 func main() {
@@ -30,6 +34,19 @@ func main() {
 	defer db.Close()
 
 	log.Info("Uygulama başlatılıyor", map[string]interface{}{"env": cfg.AppEnv})
+
+	// Tracing başlat
+	shutdownTracing, err := tracing.InitTracer(
+		"payflow",     // Servis adı
+		"1.0.0",       // Servis sürümü
+		"jaeger:4317", // Jaeger OTLP endpoint
+	)
+	if err != nil {
+		log.Error("Tracing başlatılamadı", map[string]interface{}{"error": err.Error()})
+		// Kritik bir hata olmadığı için devam edebiliriz
+	} else {
+		defer shutdownTracing()
+	}
 
 	migrationService := database.NewMigrationService(db, log)
 	if err := migrationService.RunMigrations(); err != nil {
@@ -58,6 +75,12 @@ func main() {
 					log.Error("Worker pool istatistikleri alınamadı", map[string]interface{}{"error": err.Error()})
 					continue
 				}
+
+				// Prometheus worker pool metriklerini güncelle
+				metrics.UpdateWorkerPoolStats(
+					stats.QueueLength,
+					3, // Sabit bir değer (active workers sayısı)
+				)
 
 				log.Info("Worker Pool İstatistikleri", map[string]interface{}{
 					"submitted":        stats.Submitted,
@@ -89,9 +112,17 @@ func main() {
 		w.Write([]byte("PayFlow API'ye Hoş Geldiniz!"))
 	})
 
+	// Prometheus metrik endpoint'i
+	mux.Handle("GET /metrics", promhttp.Handler())
+
+	// Middleware zinciri oluştur
+	var handler http.Handler = mux
+	handler = middleware.TracingMiddleware(handler) // Tracing önce
+	handler = middleware.MetricsMiddleware(handler) // Metrics sonra
+
 	server := &http.Server{
 		Addr:    ":" + cfg.Server.Port,
-		Handler: mux,
+		Handler: handler,
 	}
 
 	go func() {

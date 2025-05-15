@@ -1,6 +1,6 @@
-FROM golang:1.21-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
-WORKDIR /app
+WORKDIR /build
 
 RUN apk add --no-cache git gcc musl-dev
 
@@ -9,18 +9,20 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=1 GOOS=linux go build -a -tags musl -o payflow-server ./cmd/server
 
-FROM alpine:3.19
+RUN CGO_ENABLED=1 GOOS=linux go build -o payflow-server ./cmd/server
+
+FROM alpine:latest
 
 WORKDIR /app
 
 RUN apk add --no-cache ca-certificates tzdata sqlite
 
-COPY --from=builder /app/payflow-server /app/payflow-server
+COPY --from=builder /build/payflow-server .
+COPY --from=builder /build/.env .
+COPY --from=builder /build/monitoring ./monitoring
 
-COPY --from=builder /app/.env* /app/
-RUN touch /app/.env
+RUN chmod +x /app/payflow-server
 
 EXPOSE 8080
 

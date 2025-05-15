@@ -10,18 +10,22 @@ services:
     depends_on:
       - db
       - redis
+      - jaeger
     environment:
+      - APP_ENV=development
+      - SERVER_PORT=8080
+      - SERVER_TIMEOUT=30s
       - DB_HOST=db
       - DB_PORT=5432
       - DB_USER=postgres
       - DB_PASSWORD=postgres
       - DB_NAME=payflow
+      - DB_SSL_MODE=disable
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - APP_ENV=production
-      - LOG_LEVEL=info
-    volumes:
-      - ./:/app
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
+      - LOG_LEVEL=debug
     networks:
       - payflow-network
     restart: unless-stopped
@@ -75,6 +79,19 @@ services:
       - payflow-network
     depends_on:
       - prometheus
+    restart: unless-stopped
+    
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+      - "4317:4317"
+      - "4318:4318"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - payflow-network
     restart: unless-stopped
 
 networks:

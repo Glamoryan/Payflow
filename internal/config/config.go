@@ -38,8 +38,9 @@ type RedisConfig struct {
 }
 
 func Load() (*Config, error) {
-	if err := godotenv.Load(); err != nil {
-		return nil, fmt.Errorf(".env dosyası yüklenemedi: %w", err)
+	err := godotenv.Load()
+	if err != nil {
+		fmt.Println("UYARI: .env dosyası bulunamadı, çevresel değişkenler kullanılacak")
 	}
 
 	viper.AutomaticEnv()

@@ -189,3 +189,19 @@ curl -X POST http://localhost:8080/api/transactions/deposit -H "Content-Type: ap
 # İşlem istatistiklerini görüntüleme
 curl -X GET http://localhost:8080/api/transactions/stats -H "X-API-Key: <admin_api_key>"
 ```
+
+## Başlatma
+
+```bash
+# Servisler
+docker-compose up -d
+
+# app
+go run cmd/server/main.go
+```
+
+## Arayüzlere Erişim
+
+- Prometheus: http://localhost:9090
+- Grafana: http://localhost:3000 (admin/admin)
+- Jaeger UI: http://localhost:16686
