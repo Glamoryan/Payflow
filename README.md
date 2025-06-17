@@ -205,3 +205,32 @@ go run cmd/server/main.go
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3000 (admin/admin)
 - Jaeger UI: http://localhost:16686
+
+# Implement Event Sourcing
+
+Örnek test flowu
+
+```bash
+# Add user
+curl -X POST -H "Content-Type: application/json" -d '{"username": "testuser", "email": "test@example.com", "password": "password123"}' http://localhost:8080/api/users
+
+# Init user
+curl -X POST http://localhost:8080/api/balances/initialize?user_id=1
+
+# Transactions
+curl -X POST -H "Content-Type: application/json" -d '{"user_id": 1, "amount": 100}' http://localhost:8080/api/transactions/deposit
+
+curl -X POST -H "Content-Type: application/json" -d '{"user_id": 1, "amount": 30}' http://localhost:8080/api/transactions/withdraw
+
+# Balance check
+curl http://localhost:8080/api/balances?user_id=1
+
+# Replay
+curl -X POST http://localhost:8080/api/balances/replay?user_id=1
+
+# Rebuild
+curl -X POST http://localhost:8080/api/balances/rebuild?user_id=1
+
+# Balance check again
+curl http://localhost:8080/api/balances?user_id=1
+```
