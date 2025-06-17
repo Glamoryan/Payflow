@@ -57,4 +57,6 @@ type TransactionService interface {
 	Shutdown()
 	RollbackTransaction(transactionID int64) error
 	IsTransactionEligibleForRollback(transactionID int64) (bool, error)
+	ReplayTransactionEvents(transactionID int64) error
+	RebuildTransactionState(transactionID int64) error
 }

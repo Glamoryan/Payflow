@@ -390,12 +390,67 @@ func (h *TransactionHandler) ProcessBatchTransactions(w http.ResponseWriter, r *
 }
 
 func (h *TransactionHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/transactions", h.GetTransactionByID)
-	mux.HandleFunc("GET /api/user-transactions", h.GetUserTransactions)
-	mux.HandleFunc("POST /api/transactions/deposit", h.DepositFunds)
-	mux.HandleFunc("POST /api/transactions/withdraw", h.WithdrawFunds)
-	mux.HandleFunc("POST /api/transactions/transfer", h.TransferFunds)
-	mux.HandleFunc("POST /api/transactions/batch", h.ProcessBatchTransactions)
-	mux.HandleFunc("GET /api/transactions/stats", h.GetWorkerPoolStats)
-	mux.HandleFunc("POST /api/transactions/rollback", h.RollbackTransaction)
+	mux.HandleFunc("/api/transactions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			h.GetTransactionByID(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/user-transactions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			h.GetUserTransactions(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/transactions/deposit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			h.DepositFunds(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/transactions/withdraw", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			h.WithdrawFunds(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/transactions/transfer", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			h.TransferFunds(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/transactions/batch", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			h.ProcessBatchTransactions(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/transactions/stats", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			h.GetWorkerPoolStats(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/transactions/rollback", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			h.RollbackTransaction(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 }

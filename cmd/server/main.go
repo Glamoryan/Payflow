@@ -35,15 +35,13 @@ func main() {
 
 	log.Info("Uygulama başlatılıyor", map[string]interface{}{"env": cfg.AppEnv})
 
-	// Tracing başlat
 	shutdownTracing, err := tracing.InitTracer(
-		"payflow",     // Servis adı
-		"1.0.0",       // Servis sürümü
-		"jaeger:4317", // Jaeger OTLP endpoint
+		"payflow",
+		"1.0.0",
+		"jaeger:4317",
 	)
 	if err != nil {
 		log.Error("Tracing başlatılamadı", map[string]interface{}{"error": err.Error()})
-		// Kritik bir hata olmadığı için devam edebiliriz
 	} else {
 		defer shutdownTracing()
 	}
@@ -76,10 +74,9 @@ func main() {
 					continue
 				}
 
-				// Prometheus worker pool metriklerini güncelle
 				metrics.UpdateWorkerPoolStats(
 					stats.QueueLength,
-					3, // Sabit bir değer (active workers sayısı)
+					3,
 				)
 
 				log.Info("Worker Pool İstatistikleri", map[string]interface{}{
@@ -107,18 +104,51 @@ func main() {
 	balanceHandler.RegisterRoutes(mux)
 	auditLogHandler.RegisterRoutes(mux)
 
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("PayFlow API'ye Hoş Geldiniz!"))
+	log.Info("Tüm route'lar register edildi", map[string]interface{}{
+		"user_routes":        "✓",
+		"transaction_routes": "✓",
+		"balance_routes":     "✓",
+		"audit_routes":       "✓",
 	})
 
-	// Prometheus metrik endpoint'i
-	mux.Handle("GET /metrics", promhttp.Handler())
+	mux.HandleFunc("/debug/routes", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("Registered routes:\n"))
+			w.Write([]byte("GET /\n"))
+			w.Write([]byte("GET /metrics\n"))
+			w.Write([]byte("GET /debug/routes\n"))
+			w.Write([]byte("Balance routes:\n"))
+			w.Write([]byte("POST /api/balances/initialize\n"))
+			w.Write([]byte("GET /api/balances/history\n"))
+			w.Write([]byte("POST /api/balances/replay\n"))
+			w.Write([]byte("POST /api/balances/rebuild\n"))
+			w.Write([]byte("GET /api/balances\n"))
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 
-	// Middleware zinciri oluştur
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			promhttp.Handler().ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("PayFlow API is healthy!"))
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
 	var handler http.Handler = mux
-	handler = middleware.TracingMiddleware(handler) // Tracing önce
-	handler = middleware.MetricsMiddleware(handler) // Metrics sonra
+	handler = middleware.TracingMiddleware(handler)
+	handler = middleware.MetricsMiddleware(handler)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Server.Port,

@@ -21,27 +21,17 @@ type BalanceHistory struct {
 type BalanceRepository interface {
 	FindByUserID(userID int64) (*Balance, error)
 	Create(balance *Balance) error
-	Update(balance *Balance) error
-
-	AtomicUpdate(userID int64, updateFn func(currentAmount float64) float64) (float64, error)
-
-	AddBalanceHistory(history *BalanceHistory) error
-	GetBalanceHistory(userID int64, limit, offset int) ([]*BalanceHistory, error)
-	GetBalanceHistoryByDateRange(userID int64, startDate, endDate time.Time) ([]*BalanceHistory, error)
+	Update(balance *Balance) (*Balance, error)
+	InitializeBalance(userID int64) error
+	GetBalanceHistory(userID int64, startTime, endTime time.Time) ([]*Balance, error)
 }
 
 type BalanceService interface {
-	GetUserBalance(userID int64) (*Balance, error)
-	InitializeBalance(userID int64) error
-	UpdateBalance(userID int64, amount float64) error
-
+	GetBalance(userID int64) (*Balance, error)
 	DepositAtomically(userID int64, amount float64) (*Balance, error)
 	WithdrawAtomically(userID int64, amount float64) (*Balance, error)
-
-	GetBalanceHistory(userID int64, limit, offset int) ([]*BalanceHistory, error)
-	GetBalanceHistoryByDateRange(userID int64, startDate, endDate time.Time) ([]*BalanceHistory, error)
-
-	GetCachedBalance(userID int64) (*Balance, error)
-	RecalculateBalance(userID int64) (*Balance, error)
-	InvalidateCache(userID int64) error
+	InitializeBalance(userID int64) error
+	GetBalanceHistory(userID int64, startTime, endTime time.Time) ([]*Balance, error)
+	ReplayBalanceEvents(userID int64) error
+	RebuildBalanceState(userID int64) error
 }

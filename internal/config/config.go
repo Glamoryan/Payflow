@@ -45,6 +45,11 @@ func Load() (*Config, error) {
 
 	viper.AutomaticEnv()
 
+	viper.SetDefault("APP_ENV", "development")
+	viper.SetDefault("SERVER_PORT", "8081")
+	viper.SetDefault("SERVER_TIMEOUT", "30s")
+	viper.SetDefault("LOG_LEVEL", "info")
+
 	var cfg Config
 
 	cfg.AppEnv = viper.GetString("APP_ENV")

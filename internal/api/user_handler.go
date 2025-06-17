@@ -140,12 +140,36 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *UserHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/users", h.GetUserByID)
-	mux.HandleFunc("POST /api/users", h.CreateUser)
-	mux.HandleFunc("PUT /api/users", h.UpdateUser)
-	mux.HandleFunc("DELETE /api/users", h.DeleteUser)
-	mux.HandleFunc("POST /api/login", h.Login)
-	mux.HandleFunc("POST /api/users/api-key", h.GenerateApiKey)
+	mux.HandleFunc("/api/users", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			h.GetUserByID(w, r)
+		case http.MethodPost:
+			h.CreateUser(w, r)
+		case http.MethodPut:
+			h.UpdateUser(w, r)
+		case http.MethodDelete:
+			h.DeleteUser(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			h.Login(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/users/api-key", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			h.GenerateApiKey(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 }
 
 type LoginRequest struct {

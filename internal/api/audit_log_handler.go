@@ -159,7 +159,22 @@ func (h *AuditLogHandler) LogAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuditLogHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/audit-logs", h.GetAllLogs)
-	mux.HandleFunc("GET /api/entity-logs", h.GetEntityLogs)
-	mux.HandleFunc("POST /api/audit-logs", h.LogAction)
+	mux.HandleFunc("/api/audit-logs", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			h.GetAllLogs(w, r)
+		case http.MethodPost:
+			h.LogAction(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/entity-logs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			h.GetEntityLogs(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 }

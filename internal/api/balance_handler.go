@@ -37,7 +37,7 @@ func (h *BalanceHandler) GetUserBalance(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	balance, err := h.service.GetUserBalance(userID)
+	balance, err := h.service.GetBalance(userID)
 	if err != nil {
 		h.logger.Error("Bakiye bilgisi alınamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -70,7 +70,7 @@ func (h *BalanceHandler) InitializeUserBalance(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	balance, err := h.service.GetUserBalance(userID)
+	balance, err := h.service.GetBalance(userID)
 	if err != nil {
 		h.logger.Error("Bakiye bilgisi alınamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -83,50 +83,6 @@ func (h *BalanceHandler) InitializeUserBalance(w http.ResponseWriter, r *http.Re
 }
 
 func (h *BalanceHandler) GetBalanceHistory(w http.ResponseWriter, r *http.Request) {
-	userIDStr := r.URL.Query().Get("user_id")
-	if userIDStr == "" {
-		h.logger.Error("user_id parametresi eksik", map[string]interface{}{})
-		http.Error(w, "user_id parametresi eksik", http.StatusBadRequest)
-		return
-	}
-
-	userID, err := strconv.ParseInt(userIDStr, 10, 64)
-	if err != nil {
-		h.logger.Error("Geçersiz user_id formatı", map[string]interface{}{"error": err.Error()})
-		http.Error(w, "Geçersiz user_id formatı", http.StatusBadRequest)
-		return
-	}
-
-	limitStr := r.URL.Query().Get("limit")
-	limit := 10
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err == nil && parsedLimit > 0 {
-			limit = parsedLimit
-		}
-	}
-
-	offsetStr := r.URL.Query().Get("offset")
-	offset := 0
-	if offsetStr != "" {
-		parsedOffset, err := strconv.Atoi(offsetStr)
-		if err == nil && parsedOffset >= 0 {
-			offset = parsedOffset
-		}
-	}
-
-	history, err := h.service.GetBalanceHistory(userID, limit, offset)
-	if err != nil {
-		h.logger.Error("Bakiye geçmişi alınamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(history)
-}
-
-func (h *BalanceHandler) GetBalanceHistoryByDateRange(w http.ResponseWriter, r *http.Request) {
 	userIDStr := r.URL.Query().Get("user_id")
 	if userIDStr == "" {
 		h.logger.Error("user_id parametresi eksik", map[string]interface{}{})
@@ -169,7 +125,7 @@ func (h *BalanceHandler) GetBalanceHistoryByDateRange(w http.ResponseWriter, r *
 		return
 	}
 
-	history, err := h.service.GetBalanceHistoryByDateRange(userID, startDate, endDate)
+	history, err := h.service.GetBalanceHistory(userID, startDate, endDate)
 	if err != nil {
 		h.logger.Error("Bakiye geçmişi alınamadı", map[string]interface{}{
 			"user_id":    userID,
@@ -185,7 +141,7 @@ func (h *BalanceHandler) GetBalanceHistoryByDateRange(w http.ResponseWriter, r *
 	json.NewEncoder(w).Encode(history)
 }
 
-func (h *BalanceHandler) RecalculateBalance(w http.ResponseWriter, r *http.Request) {
+func (h *BalanceHandler) ReplayBalanceEvents(w http.ResponseWriter, r *http.Request) {
 	userIDStr := r.URL.Query().Get("user_id")
 	if userIDStr == "" {
 		h.logger.Error("user_id parametresi eksik", map[string]interface{}{})
@@ -200,21 +156,94 @@ func (h *BalanceHandler) RecalculateBalance(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	balance, err := h.service.RecalculateBalance(userID)
+	err = h.service.ReplayBalanceEvents(userID)
 	if err != nil {
-		h.logger.Error("Bakiye yeniden hesaplanamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
+		h.logger.Error("Bakiye eventleri tekrar oynatılamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(balance)
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "success", "message": "Balance events replayed successfully"})
+}
+
+func (h *BalanceHandler) RebuildBalanceState(w http.ResponseWriter, r *http.Request) {
+	userIDStr := r.URL.Query().Get("user_id")
+	if userIDStr == "" {
+		h.logger.Error("user_id parametresi eksik", map[string]interface{}{})
+		http.Error(w, "user_id parametresi eksik", http.StatusBadRequest)
+		return
+	}
+
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		h.logger.Error("Geçersiz user_id formatı", map[string]interface{}{"error": err.Error()})
+		http.Error(w, "Geçersiz user_id formatı", http.StatusBadRequest)
+		return
+	}
+
+	err = h.service.RebuildBalanceState(userID)
+	if err != nil {
+		h.logger.Error("Bakiye durumu yeniden oluşturulamadı", map[string]interface{}{"user_id": userID, "error": err.Error()})
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "success", "message": "Balance state rebuilt successfully"})
 }
 
 func (h *BalanceHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/balances", h.GetUserBalance)
-	mux.HandleFunc("POST /api/balances/initialize", h.InitializeUserBalance)
-	mux.HandleFunc("GET /api/balances/history", h.GetBalanceHistory)
-	mux.HandleFunc("GET /api/balances/history/date-range", h.GetBalanceHistoryByDateRange)
-	mux.HandleFunc("POST /api/balances/recalculate", h.RecalculateBalance)
+	h.logger.Info("Balance routes register ediliyor...", map[string]interface{}{})
+
+	mux.HandleFunc("/api/balances/initialize", func(w http.ResponseWriter, r *http.Request) {
+		h.logger.Info("Initialize route çağrıldı", map[string]interface{}{"method": r.Method, "path": r.URL.Path})
+		if r.Method == http.MethodPost {
+			h.InitializeUserBalance(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/balances/history", func(w http.ResponseWriter, r *http.Request) {
+		h.logger.Info("History route çağrıldı", map[string]interface{}{"method": r.Method, "path": r.URL.Path})
+		if r.Method == http.MethodGet {
+			h.GetBalanceHistory(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/balances/replay", func(w http.ResponseWriter, r *http.Request) {
+		h.logger.Info("Replay route çağrıldı", map[string]interface{}{"method": r.Method, "path": r.URL.Path})
+		if r.Method == http.MethodPost {
+			h.ReplayBalanceEvents(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/balances/rebuild", func(w http.ResponseWriter, r *http.Request) {
+		h.logger.Info("Rebuild route çağrıldı", map[string]interface{}{"method": r.Method, "path": r.URL.Path})
+		if r.Method == http.MethodPost {
+			h.RebuildBalanceState(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/balances", func(w http.ResponseWriter, r *http.Request) {
+		h.logger.Info("Ana balance route çağrıldı", map[string]interface{}{"method": r.Method, "path": r.URL.Path})
+		if r.Method == http.MethodGet {
+			h.GetUserBalance(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	h.logger.Info("Balance routes başarıyla register edildi", map[string]interface{}{
+		"routes": []string{"/api/balances/initialize", "/api/balances/history", "/api/balances/replay", "/api/balances/rebuild", "/api/balances"},
+	})
 }

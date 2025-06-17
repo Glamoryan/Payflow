@@ -25,11 +25,13 @@ type Factory interface {
 	GetTransactionRepository() domain.TransactionRepository
 	GetBalanceRepository() domain.BalanceRepository
 	GetAuditLogRepository() domain.AuditLogRepository
+	GetEventStoreRepository() domain.EventStoreRepository
 
 	GetUserService() domain.UserService
 	GetTransactionService() domain.TransactionService
 	GetBalanceService() domain.BalanceService
 	GetAuditLogService() domain.AuditLogService
+	GetEventStoreService() domain.EventStoreService
 }
 
 type AppFactory struct {
@@ -42,11 +44,13 @@ type AppFactory struct {
 	transactionRepository domain.TransactionRepository
 	balanceRepository     domain.BalanceRepository
 	auditLogRepository    domain.AuditLogRepository
+	eventStoreRepository  domain.EventStoreRepository
 
 	userService        domain.UserService
 	transactionService domain.TransactionService
 	balanceService     domain.BalanceService
 	auditLogService    domain.AuditLogService
+	eventStoreService  domain.EventStoreService
 }
 
 func NewFactory() (Factory, error) {
@@ -103,17 +107,27 @@ func (f *AppFactory) initRepositories() {
 	f.transactionRepository = repository.NewTransactionRepository(f.db, f.logger)
 	f.balanceRepository = repository.NewBalanceRepository(f.db, f.logger)
 	f.auditLogRepository = repository.NewAuditLogRepository(f.db, f.logger)
+	f.eventStoreRepository = repository.NewEventStoreRepository(f.db, f.logger)
 }
 
 func (f *AppFactory) initServices() {
+	f.eventStoreService = service.NewEventStoreService(f.eventStoreRepository, f.logger)
+
 	f.auditLogService = service.NewAuditLogService(f.auditLogRepository, f.logger)
-	f.balanceService = service.NewBalanceService(f.balanceRepository, f.auditLogRepository, f.logger, f.redisClient)
+	f.balanceService = service.NewBalanceService(
+		f.balanceRepository,
+		f.auditLogRepository,
+		f.eventStoreService,
+		f.logger,
+		f.redisClient,
+	)
 	f.userService = service.NewUserService(f.userRepository, f.balanceService, f.auditLogRepository, f.logger)
 	f.transactionService = service.NewTransactionService(
 		f.transactionRepository,
 		f.balanceRepository,
 		f.balanceService,
 		f.auditLogRepository,
+		f.eventStoreService,
 		f.logger,
 	)
 }
@@ -150,6 +164,10 @@ func (f *AppFactory) GetAuditLogRepository() domain.AuditLogRepository {
 	return f.auditLogRepository
 }
 
+func (f *AppFactory) GetEventStoreRepository() domain.EventStoreRepository {
+	return f.eventStoreRepository
+}
+
 func (f *AppFactory) GetUserService() domain.UserService {
 	return f.userService
 }
@@ -164,4 +182,8 @@ func (f *AppFactory) GetBalanceService() domain.BalanceService {
 
 func (f *AppFactory) GetAuditLogService() domain.AuditLogService {
 	return f.auditLogService
+}
+
+func (f *AppFactory) GetEventStoreService() domain.EventStoreService {
+	return f.eventStoreService
 }

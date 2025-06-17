@@ -127,6 +127,7 @@ func (m *MigrationService) RunMigrations() error {
 		{"create_balances_table", CreateBalancesTable},
 		{"create_audit_logs_table", CreateAuditLogsTable},
 		{"create_balance_history_table", CreateBalanceHistoryTable},
+		{"create_event_store_table", CreateEventStoreTable},
 	}
 
 	for _, migration := range migrations {
@@ -221,6 +222,28 @@ func CreateBalanceHistoryTable(db *sql.DB) error {
     
     CREATE INDEX IF NOT EXISTS balance_history_user_id_idx ON balance_history (user_id);
     CREATE INDEX IF NOT EXISTS balance_history_created_at_idx ON balance_history (created_at);
+    `
+
+	_, err := db.Exec(query)
+	return err
+}
+
+func CreateEventStoreTable(db *sql.DB) error {
+	query := `
+    CREATE TABLE IF NOT EXISTS event_store (
+        id SERIAL PRIMARY KEY,
+        aggregate_id TEXT NOT NULL,
+        aggregate_type TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        event_data JSONB NOT NULL,
+        version INTEGER NOT NULL,
+        created_at TIMESTAMP NOT NULL,
+        metadata JSONB
+    );
+    
+    CREATE INDEX IF NOT EXISTS event_store_aggregate_idx ON event_store (aggregate_type, aggregate_id);
+    CREATE INDEX IF NOT EXISTS event_store_version_idx ON event_store (aggregate_type, aggregate_id, version);
+    CREATE INDEX IF NOT EXISTS event_store_created_at_idx ON event_store (created_at);
     `
 
 	_, err := db.Exec(query)
