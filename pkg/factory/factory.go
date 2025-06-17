@@ -12,6 +12,7 @@ import (
 	"payflow/internal/domain"
 	"payflow/internal/repository"
 	"payflow/internal/service"
+	"payflow/pkg/cache"
 	"payflow/pkg/logger"
 )
 
@@ -20,6 +21,9 @@ type Factory interface {
 	GetConfig() *config.Config
 	GetDB() *sql.DB
 	GetRedisClient() *redis.Client
+	GetCache() cache.Cache
+	GetCacheManager() cache.CacheStrategy
+	GetWarmUpManager() *cache.WarmUpManager
 
 	GetUserRepository() domain.UserRepository
 	GetTransactionRepository() domain.TransactionRepository
@@ -35,10 +39,13 @@ type Factory interface {
 }
 
 type AppFactory struct {
-	config      *config.Config
-	logger      logger.Logger
-	db          *sql.DB
-	redisClient *redis.Client
+	config        *config.Config
+	logger        logger.Logger
+	db            *sql.DB
+	redisClient   *redis.Client
+	cache         cache.Cache
+	cacheManager  cache.CacheStrategy
+	warmUpManager *cache.WarmUpManager
 
 	userRepository        domain.UserRepository
 	transactionRepository domain.TransactionRepository
@@ -89,15 +96,22 @@ func NewFactory() (Factory, error) {
 		return nil, fmt.Errorf("Redis bağlantısı kurulamadı: %w", err)
 	}
 
+	// Initialize cache
+	cacheInstance := cache.NewRedisCache(redisClient, log, "payflow")
+	cacheManager := cache.NewCacheManager(cacheInstance, log)
+
 	factory := &AppFactory{
-		config:      cfg,
-		logger:      log,
-		db:          db,
-		redisClient: redisClient,
+		config:       cfg,
+		logger:       log,
+		db:           db,
+		redisClient:  redisClient,
+		cache:        cacheInstance,
+		cacheManager: cacheManager,
 	}
 
 	factory.initRepositories()
 	factory.initServices()
+	factory.initCacheManagers()
 
 	return factory, nil
 }
@@ -114,14 +128,23 @@ func (f *AppFactory) initServices() {
 	f.eventStoreService = service.NewEventStoreService(f.eventStoreRepository, f.logger)
 
 	f.auditLogService = service.NewAuditLogService(f.auditLogRepository, f.logger)
-	f.balanceService = service.NewBalanceService(
+
+	// Create base balance service first
+	baseBalanceService := service.NewBalanceService(
 		f.balanceRepository,
 		f.auditLogRepository,
 		f.eventStoreService,
 		f.logger,
 		f.redisClient,
 	)
-	f.userService = service.NewUserService(f.userRepository, f.balanceService, f.auditLogRepository, f.logger)
+	// Wrap with caching
+	f.balanceService = service.NewCachedBalanceService(baseBalanceService, f.cache, f.cacheManager, f.logger)
+
+	// Create base user service first
+	baseUserService := service.NewUserService(f.userRepository, f.balanceService, f.auditLogRepository, f.logger)
+	// Wrap with caching
+	f.userService = service.NewCachedUserService(baseUserService, f.cache, f.cacheManager, f.logger)
+
 	f.transactionService = service.NewTransactionService(
 		f.transactionRepository,
 		f.balanceRepository,
@@ -129,6 +152,16 @@ func (f *AppFactory) initServices() {
 		f.auditLogRepository,
 		f.eventStoreService,
 		f.logger,
+	)
+}
+
+func (f *AppFactory) initCacheManagers() {
+	f.warmUpManager = cache.NewWarmUpManager(
+		f.cache,
+		f.logger,
+		f.userService,
+		f.balanceService,
+		f.transactionService,
 	)
 }
 
@@ -146,6 +179,18 @@ func (f *AppFactory) GetDB() *sql.DB {
 
 func (f *AppFactory) GetRedisClient() *redis.Client {
 	return f.redisClient
+}
+
+func (f *AppFactory) GetCache() cache.Cache {
+	return f.cache
+}
+
+func (f *AppFactory) GetCacheManager() cache.CacheStrategy {
+	return f.cacheManager
+}
+
+func (f *AppFactory) GetWarmUpManager() *cache.WarmUpManager {
+	return f.warmUpManager
 }
 
 func (f *AppFactory) GetUserRepository() domain.UserRepository {

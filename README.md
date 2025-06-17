@@ -234,3 +234,19 @@ curl -X POST http://localhost:8080/api/balances/rebuild?user_id=1
 # Balance check again
 curl http://localhost:8080/api/balances?user_id=1
 ```
+
+# Add Caching Layer
+
+```bash
+# User cache
+curl -X POST "http://localhost:8080/api/cache/warmup" -H "Content-Type: application/json" -d '{"type": "user", "user_id": 1}' | jq
+
+curl -X GET "http://localhost:8080/api/cache/keys?pattern=user:*" | jq
+
+# Cache invalidation
+curl -X POST "http://localhost:8080/api/cache/invalidate" -H "Content-Type: application/json" -d '{"user_id": 1}' | jq
+
+curl -X POST "http://localhost:8080/api/cache/invalidate" -H "Content-Type: application/json" -d '{"pattern": "user:*"}' | jq
+
+curl -X GET "http://localhost:8080/api/cache/keys?pattern=user:*" | jq
+```

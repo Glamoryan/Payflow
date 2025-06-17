@@ -55,6 +55,25 @@ func main() {
 	transactionService := appFactory.GetTransactionService()
 	balanceService := appFactory.GetBalanceService()
 	auditLogService := appFactory.GetAuditLogService()
+	warmUpManager := appFactory.GetWarmUpManager()
+
+	// Initialize cache warm-up
+	ctx := context.Background()
+	log.Info("Cache warm-up başlatılıyor...", map[string]interface{}{})
+	if err := warmUpManager.WarmUpFrequentlyAccessedData(ctx); err != nil {
+		log.Error("Cache warm-up başarısız", map[string]interface{}{"error": err.Error()})
+	} else {
+		log.Info("Cache warm-up tamamlandı", map[string]interface{}{})
+	}
+
+	// Start scheduled warm-up in background
+	go func() {
+		warmUpCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Schedule warm-up every 30 minutes
+		warmUpManager.ScheduledWarmUp(warmUpCtx, 30*time.Minute)
+	}()
 
 	defer func() {
 		log.Info("TransactionService kapatılıyor...", map[string]interface{}{})
@@ -96,6 +115,7 @@ func main() {
 	transactionHandler := api.NewTransactionHandler(transactionService, userService, log)
 	balanceHandler := api.NewBalanceHandler(balanceService, log)
 	auditLogHandler := api.NewAuditLogHandler(auditLogService, log)
+	cacheHandler := api.NewCacheHandler(appFactory.GetCache(), warmUpManager, log)
 
 	mux := http.NewServeMux()
 
@@ -103,12 +123,14 @@ func main() {
 	transactionHandler.RegisterRoutes(mux)
 	balanceHandler.RegisterRoutes(mux)
 	auditLogHandler.RegisterRoutes(mux)
+	cacheHandler.RegisterRoutes(mux)
 
 	log.Info("Tüm route'lar register edildi", map[string]interface{}{
 		"user_routes":        "✓",
 		"transaction_routes": "✓",
 		"balance_routes":     "✓",
 		"audit_routes":       "✓",
+		"cache_routes":       "✓",
 	})
 
 	mux.HandleFunc("/debug/routes", func(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +146,12 @@ func main() {
 			w.Write([]byte("POST /api/balances/replay\n"))
 			w.Write([]byte("POST /api/balances/rebuild\n"))
 			w.Write([]byte("GET /api/balances\n"))
+			w.Write([]byte("Cache routes:\n"))
+			w.Write([]byte("GET /api/cache/stats\n"))
+			w.Write([]byte("POST /api/cache/warmup\n"))
+			w.Write([]byte("POST /api/cache/invalidate\n"))
+			w.Write([]byte("GET /api/cache/keys\n"))
+			w.Write([]byte("GET /api/cache/health\n"))
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
