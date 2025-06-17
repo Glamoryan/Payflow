@@ -194,7 +194,7 @@ curl -X GET http://localhost:8080/api/transactions/stats -H "X-API-Key: <admin_a
 
 ```bash
 # Servisler
-docker-compose up -d
+docker compose up -d
 
 # app
 go run cmd/server/main.go
