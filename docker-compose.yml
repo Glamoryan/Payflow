@@ -1,12 +1,343 @@
 version: '3.8'
 
 services:
+  # Load Balancer with NGINX
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app1
+      - app2
+    networks:
+      - payflow-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Application instance 1
+  app1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - APP_ENV=development
+      - SERVER_PORT=8080
+      - DB_HOST=db-master
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=payflow
+      - DB_SSL_MODE=disable
+      - DB_MAX_OPEN_CONNS=25
+      - DB_MAX_IDLE_CONNS=10
+      - DB_CONN_MAX_LIFETIME=300
+      # Read replicas
+      - DB_READ_HOST_1=db-replica1
+      - DB_READ_PORT_1=5432
+      - DB_READ_USER_1=postgres
+      - DB_READ_PASSWORD_1=postgres
+      - DB_READ_NAME_1=payflow
+      - DB_READ_SSL_MODE_1=disable
+      - DB_READ_WEIGHT_1=1
+      - DB_READ_HOST_2=db-replica2
+      - DB_READ_PORT_2=5432
+      - DB_READ_USER_2=postgres
+      - DB_READ_PASSWORD_2=postgres
+      - DB_READ_NAME_2=payflow
+      - DB_READ_SSL_MODE_2=disable
+      - DB_READ_WEIGHT_2=1
+      # Redis settings
+      - REDIS_HOST=redis-master
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
+      - REDIS_CLUSTER=false
+      - REDIS_POOL_SIZE=20
+      - REDIS_MIN_IDLE_CONNS=5
+      # Load balancer settings
+      - LB_ENABLED=false
+      - LB_ALGORITHM=round_robin
+      - LB_HEALTH_CHECK_PATH=/health/ready
+      - LB_HEALTH_CHECK_INTERVAL=30
+      - LOG_LEVEL=debug
+    depends_on:
+      - db-master
+      - db-replica1
+      - db-replica2
+      - redis-master
+      - jaeger
+    networks:
+      - payflow-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Application instance 2
+  app2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - APP_ENV=development
+      - SERVER_PORT=8080
+      - DB_HOST=db-master
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=payflow
+      - DB_SSL_MODE=disable
+      - DB_MAX_OPEN_CONNS=25
+      - DB_MAX_IDLE_CONNS=10
+      - DB_CONN_MAX_LIFETIME=300
+      # Read replicas
+      - DB_READ_HOST_1=db-replica1
+      - DB_READ_PORT_1=5432
+      - DB_READ_USER_1=postgres
+      - DB_READ_PASSWORD_1=postgres
+      - DB_READ_NAME_1=payflow
+      - DB_READ_SSL_MODE_1=disable
+      - DB_READ_WEIGHT_1=1
+      - DB_READ_HOST_2=db-replica2
+      - DB_READ_PORT_2=5432
+      - DB_READ_USER_2=postgres
+      - DB_READ_PASSWORD_2=postgres
+      - DB_READ_NAME_2=payflow
+      - DB_READ_SSL_MODE_2=disable
+      - DB_READ_WEIGHT_2=1
+      # Redis settings
+      - REDIS_HOST=redis-master
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
+      - REDIS_CLUSTER=false
+      - REDIS_POOL_SIZE=20
+      - REDIS_MIN_IDLE_CONNS=5
+      # Load balancer settings
+      - LB_ENABLED=false
+      - LB_ALGORITHM=round_robin
+      - LB_HEALTH_CHECK_PATH=/health/ready
+      - LB_HEALTH_CHECK_INTERVAL=30
+      - LOG_LEVEL=debug
+    depends_on:
+      - db-master
+      - db-replica1
+      - db-replica2
+      - redis-master
+      - jaeger
+    networks:
+      - payflow-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Database Master
+  db-master:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=payflow
+      - POSTGRES_REPLICATION_MODE=master
+      - POSTGRES_REPLICATION_USER=replica_user
+      - POSTGRES_REPLICATION_PASSWORD=replica_pass
+    command: >
+      postgres
+      -c wal_level=replica
+      -c max_wal_senders=3
+      -c max_replication_slots=3
+      -c hot_standby=on
+      -c archive_mode=on
+      -c archive_command='test ! -f /var/lib/postgresql/archive/%f && cp %p /var/lib/postgresql/archive/%f'
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_master_data:/var/lib/postgresql/data
+      - postgres_archive:/var/lib/postgresql/archive
+    networks:
+      - payflow-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Database Replica 1
+  db-replica1:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=payflow
+      - PGUSER=postgres
+      - PGPASSWORD=replica_pass
+      - POSTGRES_MASTER_SERVICE=db-master
+    command: >
+      bash -c "
+      until pg_isready -h db-master -p 5432 -U postgres; do
+        echo 'Waiting for master...'
+        sleep 2
+      done
+      
+      # Fix ownership and permissions
+      chown -R postgres:postgres /var/lib/postgresql/data
+      chmod 700 /var/lib/postgresql/data
+      
+      if [ ! -s /var/lib/postgresql/data/PG_VERSION ]; then
+        echo 'Başlangıç replication backup alınıyor...'
+        su-exec postgres sh -c 'PGPASSWORD=replica_pass pg_basebackup -h db-master -D /var/lib/postgresql/data -U replica_user -v -P -R'
+        chown -R postgres:postgres /var/lib/postgresql/data
+        chmod 700 /var/lib/postgresql/data
+        echo 'hot_standby = on' >> /var/lib/postgresql/data/postgresql.conf
+      fi
+      
+      exec su-exec postgres postgres
+      "
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_replica1_data:/var/lib/postgresql/data
+    depends_on:
+      - db-master
+    networks:
+      - payflow-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Database Replica 2
+  db-replica2:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=payflow
+      - PGUSER=postgres
+      - PGPASSWORD=replica_pass
+      - POSTGRES_MASTER_SERVICE=db-master
+    command: >
+      bash -c "
+      until pg_isready -h db-master -p 5432 -U postgres; do
+        echo 'Waiting for master...'
+        sleep 2
+      done
+      
+      # Fix ownership and permissions
+      chown -R postgres:postgres /var/lib/postgresql/data
+      chmod 700 /var/lib/postgresql/data
+      
+      if [ ! -s /var/lib/postgresql/data/PG_VERSION ]; then
+        echo 'Başlangıç replication backup alınıyor...'
+        su-exec postgres sh -c 'PGPASSWORD=replica_pass pg_basebackup -h db-master -D /var/lib/postgresql/data -U replica_user -v -P -R'
+        chown -R postgres:postgres /var/lib/postgresql/data
+        chmod 700 /var/lib/postgresql/data
+        echo 'hot_standby = on' >> /var/lib/postgresql/data/postgresql.conf
+      fi
+      
+      exec su-exec postgres postgres
+      "
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_replica2_data:/var/lib/postgresql/data
+    depends_on:
+      - db-master
+    networks:
+      - payflow-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis Master
+  redis-master:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_master_data:/data
+    networks:
+      - payflow-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis Replica
+  redis-replica:
+    image: redis:7-alpine
+    command: redis-server --replicaof redis-master 6379 --appendonly yes
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_replica_data:/data
+    depends_on:
+      - redis-master
+    networks:
+      - payflow-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Legacy single services for backward compatibility
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=payflow
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - payflow-network
+    restart: unless-stopped
+    profiles:
+      - legacy
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6381:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - payflow-network
+    restart: unless-stopped
+    profiles:
+      - legacy
+
   app:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"
+      - "8081:8080"
     depends_on:
       - db
       - redis
@@ -14,7 +345,6 @@ services:
     environment:
       - APP_ENV=development
       - SERVER_PORT=8080
-      - SERVER_TIMEOUT=30s
       - DB_HOST=db
       - DB_PORT=5432
       - DB_USER=postgres
@@ -29,31 +359,10 @@ services:
     networks:
       - payflow-network
     restart: unless-stopped
+    profiles:
+      - legacy
 
-  db:
-    image: postgres:16-alpine
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=payflow
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - payflow-network
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - payflow-network
-    restart: unless-stopped
-
+  # Monitoring services
   prometheus:
     image: prom/prometheus:latest
     ports:
@@ -99,7 +408,18 @@ networks:
     driver: bridge
 
 volumes:
+  # High Availability volumes
+  postgres_master_data:
+  postgres_replica1_data:
+  postgres_replica2_data:
+  postgres_archive:
+  redis_master_data:
+  redis_replica_data:
+  
+  # Legacy volumes
   postgres_data:
   redis_data:
+  
+  # Monitoring volumes
   prometheus_data:
   grafana_data:

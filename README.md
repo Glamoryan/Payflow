@@ -1,211 +1,267 @@
 # PayFlow
 
-- Katmanlı mimari yapısı
-- Factory design pattern kullanımı
-- Düzenli Go package yapısı
-- Go modülleri ile dependency yönetimi
-- Environment değişkenleri için sistem yapısı
-- Zerolog ile loglama
-- Graceful shutdown handling
-- Thread-safe bakiye güncellemeleri
-- Eşzamanlı işlem sistemi (Worker Pool)
-- Rol tabanlı yetkilendirme
-- API Anahtarı tabanlı kimlik doğrulama
-- İşlem geri alma mekanizması
-- Bakiye geçmişi izleme
 
-## Başlangıç
+## Kurulum
 
 ```bash
-# Environment değişkenlerini yapılandırın
-cp .env.example .env
-# Gerekli değişiklikleri .env dosyasında yapın
 
-# Uygulamayı başlatın
-go run cmd/server/main.go
+# High availability stack'i başlatın
+docker compose up -d
+
+
+# Load balancer üzerinden health check
+curl http://localhost/health
 ```
 
-## Authentication
+### Legacy Single Instance Kurulum
+
+```bash
+# Legacy profil ile tek instance çalıştırma
+docker compose --profile legacy up -d
+
+# Loglar
+docker compose logs -f app
+```
+
+### High Availability Yapısı
+
+```
+                    ┌─────────────┐
+                    │    NGINX    │
+                    │Load Balancer│
+                    └─────────────┘
+                           │
+                    ┌──────┴──────┐
+                    │             │
+              ┌─────────┐   ┌─────────┐
+              │  App1   │   │  App2   │
+              │Instance │   │Instance │
+              └─────────┘   └─────────┘
+                    │             │
+                    └──────┬──────┘
+                           │
+           ┌───────────────┼───────────────┐
+           │               │               │
+    ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+    │ DB Master   │ │DB Replica 1 │ │DB Replica 2 │
+    │(Write)      │ │(Read)       │ │(Read)       │
+    └─────────────┘ └─────────────┘ └─────────────┘
+           │               │               │
+    ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+    │Redis Master │ │Redis Replica│ │   Cache     │
+    │             │ │             │ │  Manager    │
+    └─────────────┘ └─────────────┘ └─────────────┘
+```
+
+## API Kullanımı
+
+### Sistem Health Checks
+
+```bash
+# Genel health check
+curl http://localhost/health
+
+# NGINX status
+curl http://localhost:8080/nginx_status
+```
+
+### Authentication ve Başlangıç
 
 ```bash
 # Yeni Kullanıcı Oluşturma
-curl -X POST http://localhost:8080/api/users -H "Content-Type: application/json" -d '{
+curl -X POST http://localhost/api/users -H "Content-Type: application/json" -d '{
   "username": "admin",
   "email": "admin@example.com",
   "password": "securepassword",
   "role": "admin"
 }'
 
-# Normal kullanıcı oluşturma
-curl -X POST http://localhost:8080/api/users -H "Content-Type: application/json" -d '{
-  "username": "user1",
-  "email": "user1@example.com",
-  "password": "userpassword",
-  "role": "user"
-}'
-
 # Giriş yapma ve API anahtarı alma
-curl -X POST http://localhost:8080/api/login -H "Content-Type: application/json" -d '{
+curl -X POST http://localhost/api/login -H "Content-Type: application/json" -d '{
   "username": "admin",
   "password": "securepassword"
 }'
 
 # API anahtarı yenileme
-curl -X POST http://localhost:8080/api/users/api-key -H "X-API-Key: <your_api_key>"
+curl -X POST http://localhost/api/users/api-key -H "X-API-Key: <your_api_key>"
 ```
 
-## Kullanıcı İşlemleri
+### Kullanıcı İşlemleri
 
 ```bash
 # Kullanıcı Bilgilerini Görüntüleme
-curl -X GET "http://localhost:8080/api/users?id=1" -H "X-API-Key: <your_api_key>"
+curl -X GET "http://localhost/api/users?id=1" -H "X-API-Key: <your_api_key>"
 
 # Kullanıcı Güncelleme
-curl -X PUT http://localhost:8080/api/users -H "Content-Type: application/json" -H "X-API-Key: <your_api_key>" \
+curl -X PUT http://localhost/api/users -H "Content-Type: application/json" -H "X-API-Key: <your_api_key>" \
      -d '{"id": 1, "username": "updateduser", "email": "updated@example.com", "role": "admin"}'
 
 # Kullanıcı Silme
-curl -X DELETE "http://localhost:8080/api/users?id=1" -H "X-API-Key: <your_api_key>"
+curl -X DELETE "http://localhost/api/users?id=1" -H "X-API-Key: <your_api_key>"
 ```
 
-## Bakiye İşlemleri
+### Bakiye İşlemleri
 
 ```bash
 # Bakiye Oluşturma
-curl -X POST "http://localhost:8080/api/balances/initialize?user_id=1" -H "X-API-Key: <your_api_key>"
+curl -X POST "http://localhost/api/balances/initialize?user_id=1" -H "X-API-Key: <your_api_key>"
 
 # Bakiye Görüntüleme
-curl -X GET "http://localhost:8080/api/balances?user_id=1" -H "X-API-Key: <your_api_key>"
+curl -X GET "http://localhost/api/balances?user_id=1" -H "X-API-Key: <your_api_key>"
 
 # Bakiye Geçmişi Görüntüleme
-curl -X GET "http://localhost:8080/api/balances/history?user_id=1&limit=10&offset=0" -H "X-API-Key: <your_api_key>"
-
-# Tarih Aralığına Göre Bakiye Geçmişi
-curl -X GET "http://localhost:8080/api/balances/history/date-range?user_id=1&start_date=2023-01-01T00:00:00Z&end_date=2023-12-31T23:59:59Z" -H "X-API-Key: <your_api_key>"
-
-# Bakiyeyi Yeniden Hesaplama (Optimizasyon)
-curl -X POST "http://localhost:8080/api/balances/recalculate?user_id=1" -H "X-API-Key: <your_api_key>"
+curl -X GET "http://localhost/api/balances/history?user_id=1&limit=10&offset=0" -H "X-API-Key: <your_api_key>"
 ```
 
-## Para İşlemleri
+### Para Transferi
 
 ```bash
-# Para Yatırma
-curl -X POST http://localhost:8080/api/transactions/deposit -H "Content-Type: application/json" -H "X-API-Key: <your_api_key>" \
-     -d '{"user_id": 1, "amount": 1000, "description": "İlk bakiye yükleme"}'
+# Para yatırma
+curl -X POST http://localhost/api/transactions/deposit -H "Content-Type: application/json" -H "X-API-Key: <your_api_key>" \
+     -d '{"user_id": 1, "amount": 100.50, "description": "Para yatırma"}'
 
-# Para Çekme
-curl -X POST http://localhost:8080/api/transactions/withdraw -H "Content-Type: application/json" -H "X-API-Key: <your_api_key>" \
-     -d '{"user_id": 1, "amount": 200, "description": "Test para çekme"}'
+# Para çekme
+curl -X POST http://localhost/api/transactions/withdraw -H "Content-Type: application/json" -H "X-API-Key: <your_api_key>" \
+     -d '{"user_id": 1, "amount": 50.25, "description": "Para çekme"}'
 
-# Para Transferi
-curl -X POST http://localhost:8080/api/transactions/transfer -H "Content-Type: application/json" -H "X-API-Key: <your_api_key>" \
-     -d '{"from_user_id": 1, "to_user_id": 2, "amount": 300, "description": "Test transfer"}'
+# Para transferi
+curl -X POST http://localhost/api/transactions/transfer -H "Content-Type: application/json" -H "X-API-Key: <your_api_key>" \
+     -d '{"from_user_id": 1, "to_user_id": 2, "amount": 25.00, "description": "Transfer"}'
 
 # Toplu İşlem (Batch Transaction)
-curl -X POST http://localhost:8080/api/transactions/batch -H "Content-Type: application/json" -H "X-API-Key: <your_api_key>" \
+curl -X POST http://localhost/api/transactions/batch -H "Content-Type: application/json" -H "X-API-Key: <your_api_key>" \
      -d '{
        "transactions": [
          {"sender_id": 1, "receiver_id": 2, "amount": 100, "description": "Test işlem 1"},
-         {"sender_id": 1, "receiver_id": 3, "amount": 150, "description": "Test işlem 2"},
-         {"sender_id": 2, "receiver_id": 1, "amount": 75, "description": "Test işlem 3"}
+         {"sender_id": 1, "receiver_id": 3, "amount": 150, "description": "Test işlem 2"}
        ]
      }'
 ```
 
-## İşlem Geçmişi ve Yönetimi
+
+### Monitoring Dashboards
+- **NGINX Load Balancer**: http://localhost
+- **Uygulama Health Check**: http://localhost/health
+- **Prometheus Metrics**: http://localhost:9090
+- **Grafana Dashboard**: http://localhost:3000 (admin/admin)
+- **Jaeger Tracing**: http://localhost:16686
+
+### Service Ports
+- **80**: NGINX Load Balancer (HTTP)
+- **443**: NGINX Load Balancer (HTTPS)
+- **5432**: PostgreSQL Master
+- **5433**: PostgreSQL Replica 1
+- **5434**: PostgreSQL Replica 2
+- **6379**: Redis Master
+- **6380**: Redis Replica
+
+### Operasyonel Endpointler
 
 ```bash
-# Kullanıcının İşlem Geçmişini Görüntüleme
-curl -X GET "http://localhost:8080/api/user-transactions?user_id=1" -H "X-API-Key: <your_api_key>"
+# Database connection stats
+curl http://localhost/health | jq '.services.connection_manager'
 
-# Belirli Bir İşlemi Görüntüleme
-curl -X GET "http://localhost:8080/api/transactions?id=1" -H "X-API-Key: <your_api_key>"
+# Load balancer stats
+curl http://localhost/health | jq '.services.load_balancer'
 
-# İşlem İstatistiklerini Görüntüleme (Admin yetkisi gerektirir)
-curl -X GET http://localhost:8080/api/transactions/stats -H "X-API-Key: <admin_api_key>"
+# Fallback mechanism stats  
+curl http://localhost/health | jq '.services.fallback_manager'
 
-# İşlemi Geri Alma (Rollback) (Admin yetkisi gerektirir)
-curl -X POST "http://localhost:8080/api/transactions/rollback?id=1" -H "X-API-Key: <admin_api_key>"
+# Cache istatistikleri
+curl http://localhost/api/cache/stats
+
+# Cache warm-up
+curl -X POST http://localhost/api/cache/warmup
+
+# İşlem istatistikleri (Admin yetkisi gerekir)
+curl -X GET http://localhost/api/transactions/stats -H "X-API-Key: <admin_api_key>"
 ```
 
-## Denetim Günlükleri
+## Yüksek Erişilebilirlik Özellikleri
+
+### Database Replication
+- **Master-Slave Setup**: Yazma işlemleri master'da, okuma işlemleri replica'larda
+- **Automatic Failover**: Read replica hataları durumunda master'a otomatik geçiş
+- **Load Balancing**: Weighted round-robin ile read replicas arasında yük dağılımı
+
+### Circuit Breaker Pattern
+- **Database Operations**: Veritabanı hataları için circuit breaker koruması
+- **External Services**: Dış servis çağrıları için otomatik koruma
+- **Configurable Thresholds**: Yapılandırılabilir hata eşikleri
+
+### Fallback Mechanisms
+- **Cache Strategy**: Cache miss durumlarında yedek data sources
+- **Retry Strategy**: Geçici hatalar için exponential backoff ile retry
+- **Degraded Mode**: Kritik olmayan özelliklerin devre dışı bırakılması
+- **Default Values**: Hizmet hataları durumunda varsayılan değerler
+
+### Load Balancing
+- **NGINX Upstream**: Multiple application instances
+- **Health Checks**: Automatic unhealthy instance detection
+- **Rate Limiting**: API endpoint protection
+- **SSL Termination**: HTTPS support
+
+## Konfigürasyon
+
+### Environment Variables
 
 ```bash
-# Tüm Denetim Günlüklerini Görüntüleme
-curl -X GET "http://localhost:8080/api/audit-logs" -H "X-API-Key: <your_api_key>"
+# Database Master
+DB_HOST=db-master
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=postgres
+DB_NAME=payflow
+DB_MAX_OPEN_CONNS=25
+DB_MAX_IDLE_CONNS=10
+DB_CONN_MAX_LIFETIME=300
 
-# Belirli Bir Varlık İçin Denetim Günlüklerini Görüntüleme
-curl -X GET "http://localhost:8080/api/entity-logs?entity_type=balance&entity_id=1" -H "X-API-Key: <your_api_key>"
+# Database Read Replicas
+DB_READ_HOST_1=db-replica1
+DB_READ_PORT_1=5432
+DB_READ_WEIGHT_1=1
+
+DB_READ_HOST_2=db-replica2
+DB_READ_PORT_2=5432
+DB_READ_WEIGHT_2=1
+
+# Redis Configuration
+REDIS_HOST=redis-master
+REDIS_PORT=6379
+REDIS_CLUSTER=false
+REDIS_POOL_SIZE=20
+REDIS_MIN_IDLE_CONNS=5
+
+# Load Balancer
+LB_ENABLED=false
+LB_ALGORITHM=round_robin
+LB_HEALTH_CHECK_PATH=/health/ready
+LB_HEALTH_CHECK_INTERVAL=30
 ```
 
-## Thread-Safe Bakiye İşlemleri
-```bash
-# Thread-Safe Para Yatırma (Paralel çalıştırılabilir)
-curl -X POST http://localhost:8080/api/transactions/deposit -H "Content-Type: application/json" -H "X-API-Key: <your_api_key>" \
-     -d '{"user_id": 1, "amount": 500, "description": "Paralel yükleme 1"}'
-```
 
-## Worker Pool ve İşlem Kuyruğu
-
-## Örnek Akış
-
-1. Sistemi ilk kez başlattığınızda:
-
-```bash
-# Veritabanını temizleme
-rm -f payflow.db
-
-# Uygulamayı başlatma
-go run cmd/server/main.go
-```
-
-2. Kullanıcı oluşturma ve giriş yapma:
-
-```bash
-# Admin kullanıcısı oluşturma
-curl -X POST http://localhost:8080/api/users -H "Content-Type: application/json" -d '{
-  "username": "admin",
-  "email": "admin@example.com",
-  "password": "securepassword",
-  "role": "admin"
-}'
-
-# Giriş yapma
-curl -X POST http://localhost:8080/api/login -H "Content-Type: application/json" -d '{
-  "username": "admin",
-  "password": "securepassword"
-}'
-# Bu işlem size bir API anahtarı döndürecektir, bunu not edin
-```
-
-3. API anahtarı ile işlem yapma:
+### Load Testing
 
 ```bash
-# Para yatırma
-curl -X POST http://localhost:8080/api/transactions/deposit -H "Content-Type: application/json" -H "X-API-Key: <admin_api_key>" \
-     -d '{"user_id": 1, "amount": 1000, "description": "İlk bakiye yükleme"}'
+# Apache Bench ile basit load test
+ab -n 1000 -c 10 http://localhost/health
 
-# İşlem istatistiklerini görüntüleme
-curl -X GET http://localhost:8080/api/transactions/stats -H "X-API-Key: <admin_api_key>"
+# Wrk ile advanced load test
+wrk -t12 -c400 -d30s http://localhost/api/users/1
 ```
 
-## Başlatma
+### Circuit Breaker Testing
 
 ```bash
-# Servisler
-docker compose up -d
+# Database'i kapatarak circuit breaker test etme
+docker compose stop db-master
 
-# app
-go run cmd/server/main.go
+# Health check ile durumu kontrol etme
+curl http://localhost/health
+
+# Database'i yeniden başlatma
+docker compose start db-master
 ```
-
-## Arayüzlere Erişim
-
-- Prometheus: http://localhost:9090
-- Grafana: http://localhost:3000 (admin/admin)
-- Jaeger UI: http://localhost:16686
-
 # Implement Event Sourcing
 
 Örnek test flowu

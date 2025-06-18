@@ -57,7 +57,6 @@ func main() {
 	auditLogService := appFactory.GetAuditLogService()
 	warmUpManager := appFactory.GetWarmUpManager()
 
-	// Initialize cache warm-up
 	ctx := context.Background()
 	log.Info("Cache warm-up başlatılıyor...", map[string]interface{}{})
 	if err := warmUpManager.WarmUpFrequentlyAccessedData(ctx); err != nil {
@@ -66,12 +65,10 @@ func main() {
 		log.Info("Cache warm-up tamamlandı", map[string]interface{}{})
 	}
 
-	// Start scheduled warm-up in background
 	go func() {
 		warmUpCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// Schedule warm-up every 30 minutes
 		warmUpManager.ScheduledWarmUp(warmUpCtx, 30*time.Minute)
 	}()
 
@@ -116,6 +113,7 @@ func main() {
 	balanceHandler := api.NewBalanceHandler(balanceService, log)
 	auditLogHandler := api.NewAuditLogHandler(auditLogService, log)
 	cacheHandler := api.NewCacheHandler(appFactory.GetCache(), warmUpManager, log)
+	healthHandler := api.NewHealthHandler(appFactory, log)
 
 	mux := http.NewServeMux()
 
@@ -165,14 +163,9 @@ func main() {
 		}
 	})
 
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			w.Header().Set("Content-Type", "text/plain")
-			w.Write([]byte("PayFlow API is healthy!"))
-		} else {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
+	mux.HandleFunc("/health", healthHandler.HealthCheck)
+	mux.HandleFunc("/health/live", healthHandler.LivenessCheck)
+	mux.HandleFunc("/health/ready", healthHandler.ReadinessCheck)
 
 	var handler http.Handler = mux
 	handler = middleware.TracingMiddleware(handler)
